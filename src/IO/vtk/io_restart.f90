@@ -1,4 +1,5 @@
 module io_restart
+  use iso_fortran_env, only: int64
 #include "param.h"
   implicit none
 contains
@@ -92,9 +93,16 @@ contains
     real, pointer :: solnVar(:,:,:,:)
     real(8), allocatable :: buf(:)
     integer :: i, j, k, idx
+    character(len=512) :: header
 
-    call seek_to_dataarray(u, name)
-    call read_n_reals_from_dataarray(u, ncells, buf)
+    call seek_to_dataarray(u, name, header)
+    if (index(header, 'format="appended"') > 0) then
+      call read_binary_array(u, header, ncells, buf)
+    else if (index(header, 'format="ascii"') > 0) then
+      call read_n_reals_from_dataarray(u, ncells, buf)
+    else
+      error stop "restart_problem: unsupported VTK array format"
+    end if
 
     idx = 0
     do k = klo, khi
@@ -112,18 +120,92 @@ contains
   ! -----------------------------
   ! XML parsing helpers
   ! -----------------------------
-  subroutine seek_to_dataarray(u, name)
+  subroutine seek_to_dataarray(u, name, header)
     integer, intent(in) :: u
     character(len=*), intent(in) :: name
+    character(len=*), optional, intent(out) :: header
     character(len=512) :: line
     integer :: ios
     rewind(u)
     do
       read(u,'(A)',iostat=ios) line
       if (ios /= 0) stop "seek_to_dataarray: DataArray not found"
+      if (index(line, '</ImageData>') > 0) error stop "seek_to_dataarray: DataArray not found"
       if (index(line,'<DataArray') > 0 .and. index(line,'Name="'//trim(name)//'"') > 0) exit
     end do
+    if (present(header)) header = line
   end subroutine seek_to_dataarray
+
+  subroutine read_binary_array(u, header, n, arr)
+    integer, intent(in) :: u, n
+    character(len=*), intent(in) :: header
+    real(8), allocatable, intent(out) :: arr(:)
+    integer :: raw, ios, p, q, used
+    integer(int64) :: offset, base, nbytes
+    character(len=256) :: fname
+    character(len=512) :: line
+    character :: ch
+
+    p = index(header, 'offset="')
+    if (p == 0) error stop "restart_problem: missing binary offset"
+    p = p + len('offset="')
+    q = index(header(p:), '"')
+    if (q <= 1) error stop "restart_problem: bad binary offset"
+    read(header(p:p+q-2), *, iostat=ios) offset
+    if (ios /= 0) error stop "restart_problem: bad binary offset"
+    if (offset < 0) error stop "restart_problem: negative binary offset"
+
+    inquire(unit=u, name=fname)
+    close(u)
+    open(newunit=raw, file=trim(fname), status="old", action="read", &
+         access="stream", form="unformatted", iostat=ios)
+    if (ios /= 0) error stop "restart_problem: cannot open binary stream"
+
+    ! scan only the XML header, stopping before binary data
+    line = ''
+    used = 0
+    do
+      read(raw, iostat=ios) ch
+      if (ios /= 0) error stop "restart_problem: missing appended data"
+      if (ch == '>') then
+        if (index(line, '<AppendedData') > 0) then
+          if (index(line, 'encoding="raw"') == 0) error stop "restart_problem: expected raw encoding"
+          exit
+        end if
+      end if
+      if (ch == achar(10)) then
+        if (index(line, '<VTKFile') > 0) then
+          if (index(line, 'header_type="UInt64"') == 0) error stop "restart_problem: expected UInt64 header"
+          if (index(line, 'byte_order="LittleEndian"') == 0) error stop "restart_problem: expected little endian"
+          if (index(line, 'compressor=') > 0) error stop "restart_problem: compressed arrays unsupported"
+        end if
+        line = ''
+        used = 0
+      else
+        used = used + 1
+        if (used > len(line)) error stop "restart_problem: XML header line too long"
+        line(used:used) = ch
+      end if
+    end do
+
+    ! offsets start immediately after the underscore
+    do
+      read(raw, iostat=ios) ch
+      if (ios /= 0) error stop "restart_problem: missing appended marker"
+      if (ch > ' ') exit
+    end do
+    if (ch /= '_') error stop "restart_problem: bad appended marker"
+    inquire(unit=raw, pos=base)
+    read(raw, pos=base+offset, iostat=ios) nbytes
+    if (ios /= 0) error stop "restart_problem: cannot read binary size"
+    if (nbytes /= 8_int64*int(n,int64)) error stop "restart_problem: binary size mismatch"
+    allocate(arr(n))
+    read(raw, iostat=ios) arr
+    if (ios /= 0) error stop "restart_problem: incomplete binary field"
+    close(raw)
+    open(unit=u, file=trim(fname), status="old", action="read", form="formatted", iostat=ios)
+    if (ios /= 0) error stop "restart_problem: cannot reopen XML header"
+  end subroutine read_binary_array
 
   subroutine read_n_reals_from_dataarray(u, n, arr)
     integer, intent(in) :: u, n

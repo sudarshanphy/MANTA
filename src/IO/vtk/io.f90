@@ -1,4 +1,5 @@
 module io_module
+  use iso_fortran_env, only: int64, real64
 #include "param.h"
   implicit none
 contains
@@ -19,6 +20,10 @@ contains
     integer :: ierr, nprocs
     integer :: i0p, i1p, j0p, j1p, k0p, k1p
     integer :: whole_i0, whole_i1, whole_j0, whole_j1, whole_k0, whole_k1
+    integer :: ivar
+    integer(int64) :: nbytes
+    real(real64), allocatable :: field(:,:,:)
+    character(len=64) :: value_str
     integer :: ionum
     integer :: r, xr, yr, zr, ilo_r, ihi_r, jlo_r, jhi_r, klo_r, khi_r
     character(len=10)  :: int_to_str, rank_to_str
@@ -119,26 +124,29 @@ contains
     ! Write per-rank .vti
     ! ----------------------------
     ionum = 10
-    open(unit=ionum, file=vti_name, status="replace", action="write", form="formatted")
+    open(unit=ionum, file=vti_name, status="replace", action="write", &
+         access="stream", form="unformatted")
 
-    write(ionum,'(A)') '<?xml version="1.0"?>'
-    write(ionum,'(A)') '<VTKFile type="ImageData" version="0.1" byte_order="LittleEndian">'
-    write(ionum,'(A)') '  <ImageData WholeExtent="'//trim(extent_str(whole_i0,whole_i1,whole_j0,whole_j1,whole_k0,whole_k1))// &
+    call write_xml(ionum, '<?xml version="1.0"?>')
+    call write_xml(ionum, '<VTKFile type="ImageData" version="0.1" byte_order="LittleEndian" header_type="UInt64">')
+    call write_xml(ionum, '  <ImageData WholeExtent="'//trim(extent_str(whole_i0,whole_i1,whole_j0,whole_j1,whole_k0,whole_k1))// &
                        '" Origin="'//trim(real3_str(xmin,ymin,zorigin))// &
-                       '" Spacing="'//trim(real3_str(dx,dy_out,dz_out))//'">'
+                       '" Spacing="'//trim(real3_str(dx,dy_out,dz_out))//'">')
 
-    write(ionum,'(A)') '      <FieldData>'
-    write(ionum,'(A)') '        <DataArray type="Int32" Name="CYCLE" NumberOfTuples="1" format="ascii">'
-    write(ionum,'(I0)') step
-    write(ionum,'(A)') '        </DataArray>'
-    write(ionum,'(A)') '        <DataArray type="Float64" Name="TIME" NumberOfTuples="1" format="ascii">'
-    write(ionum,'(ES25.18)') dble(t)
-    write(ionum,'(A)') '        </DataArray>'
-    write(ionum,'(A)') '      </FieldData>'
+    call write_xml(ionum, '      <FieldData>')
+    call write_xml(ionum, '        <DataArray type="Int32" Name="CYCLE" NumberOfTuples="1" format="ascii">')
+    write(value_str,'(I0)') step
+    call write_xml(ionum, trim(value_str))
+    call write_xml(ionum, '        </DataArray>')
+    call write_xml(ionum, '        <DataArray type="Float64" Name="TIME" NumberOfTuples="1" format="ascii">')
+    write(value_str,'(ES25.18)') t
+    call write_xml(ionum, trim(value_str))
+    call write_xml(ionum, '        </DataArray>')
+    call write_xml(ionum, '      </FieldData>')
     
-    write(ionum,'(A)') '    <Piece Extent="'//trim(extent_str(i0p,i1p,j0p,j1p,k0p,k1p))//'">'
+    call write_xml(ionum, '    <Piece Extent="'//trim(extent_str(i0p,i1p,j0p,j1p,k0p,k1p))//'">')
 
-    write(ionum,'(A)') '      <CellData Scalars="dens">'
+    call write_xml(ionum, '      <CellData Scalars="dens">')
 
     call write_scalar(u=ionum, name="dens",  solnVar=solnVar, ivar=IDENS, ilo=ilo, ihi=ihi, &
                       jlo=jlo, jhi=jhi, klo=klo, khi=khi)
@@ -167,10 +175,24 @@ contains
     call write_scalar(u=ionum, name="ener",  solnVar=solnVar, ivar=IENER, ilo=ilo, ihi=ihi, &
                       jlo=jlo, jhi=jhi, klo=klo, khi=khi)
 
-    write(ionum,'(A)') '      </CellData>'
-    write(ionum,'(A)') '    </Piece>'
-    write(ionum,'(A)') '  </ImageData>'
-    write(ionum,'(A)') '</VTKFile>'
+    call write_xml(ionum, '      </CellData>')
+    call write_xml(ionum, '    </Piece>')
+    call write_xml(ionum, '  </ImageData>')
+    ! binary fields follow the underscore
+    call write_xml(ionum, '  <AppendedData encoding="raw">')
+    write(ionum) '_'
+    nbytes = 8_int64 * int(ihi-ilo+1,int64) * int(jhi-jlo+1,int64) * int(khi-klo+1,int64)
+    ! VTK order: x first, then y, then z
+    allocate(field(ihi-ilo+1,jhi-jlo+1,khi-klo+1))
+    do ivar = NVAR_BEGIN, NVAR_END
+      field = solnVar(ivar,ilo:ihi,jlo:jhi,klo:khi)
+      write(ionum) nbytes
+      write(ionum) field
+    end do
+    deallocate(field)
+    write(ionum) achar(10)
+    call write_xml(ionum, '  </AppendedData>')
+    call write_xml(ionum, '</VTKFile>')
 
     close(ionum)
 
@@ -288,22 +310,20 @@ contains
     integer, intent(in) :: u, ivar, ilo, ihi, jlo, jhi, klo, khi
     character(len=*), intent(in) :: name
     real, pointer :: solnVar(:,:,:,:)
-    integer :: i, j, k, cnt
+    integer(int64) :: nbytes, offset
+    character(len=32) :: offset_str
 
-    write(u,'(A)') '        <DataArray type="Float64" Name="'//trim(name)//'" NumberOfComponents="1" format="ascii">'
-    cnt = 0
-    ! VTK order: x first, then y, then z
-    do k = klo, khi
-      do j = jlo, jhi
-        do i = ilo, ihi
-          write(u,'(ES25.18,1x)', advance='no') solnVar(ivar,i,j,k)
-          cnt = cnt + 1
-          if (mod(cnt,6) == 0) write(u,*)
-        end do
-      end do
-    end do
-    write(u,*)
-    write(u,'(A)') '        </DataArray>'
+    nbytes = 8_int64 * int(ihi-ilo+1,int64) * int(jhi-jlo+1,int64) * int(khi-klo+1,int64)
+    offset = int(ivar-NVAR_BEGIN,int64) * (8_int64 + nbytes)
+    write(offset_str,'(I0)') offset
+    call write_xml(u, '        <DataArray type="Float64" Name="'//trim(name)// &
+                   '" NumberOfComponents="1" format="appended" offset="'//trim(offset_str)//'"/>')
   end subroutine write_scalar
+
+  subroutine write_xml(u, line)
+    integer, intent(in) :: u
+    character(len=*), intent(in) :: line
+    write(u) trim(line)//achar(10)
+  end subroutine write_xml
 
 end module io_module
