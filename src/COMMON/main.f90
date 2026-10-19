@@ -9,6 +9,9 @@ program hydro
   use applyBC_module, only: applyBC_all
   use rk2_module, only: RK2_SSP
   use misc_module, only: get_dt
+#ifdef MHD
+  use misc_module, only: compute_maxdivB
+#endif
   use mpi_func
   use guard_func               
   use mpi 
@@ -22,7 +25,9 @@ program hydro
   real :: timer_start, timer_stop, time_per_step, timer_step0, &
           timer_step1
  
-  real :: maxdivB
+#ifdef MHD
+  real(8) :: maxdivB, maxdivB_error
+#endif
 
   ! initilize mpi
   call init_procs()
@@ -98,8 +103,17 @@ program hydro
 
     if (step == nend) io_output=.true.
 
+#ifdef MHD
+    ! global maxima after RK2 fills guard cells
+    maxdivB = compute_maxdivB(mainVar(BMFX_VAR,:,:,:), mainVar(BMFY_VAR,:,:,:), mainVar(BMFZ_VAR,:,:,:))
+    maxdivB_error = compute_maxdivB(mainVar(BMFX_VAR,:,:,:), mainVar(BMFY_VAR,:,:,:), &
+                                  mainVar(BMFZ_VAR,:,:,:), normalized=.true.)
+#endif
     if (myrank == MASTER_PROC) then
       print *, "Step: ", step," --> time = ", time , ", dt = ", dt
+#ifdef MHD
+      print '(A,ES14.6,A,ES14.6)', '  max |divB| = ', maxdivB, '  max divB_error = ', maxdivB_error
+#endif
     end if
 
     if (io_output) then
