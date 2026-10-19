@@ -737,7 +737,7 @@ contains
                     else
 
                       U2(id) = dsR
-                      U2(ie) = UR1(ie) - sdsR*(vt1R*UR1(ibt1) + vt2R*UR1(ibt2) &
+                      U2(ie) = UR1(ie) + sdsR*(vt1R*UR1(ibt1) + vt2R*UR1(ibt2) &
                                        - at1*U2(ibt1) - at2*U2(ibt2))*f2
 
                       U2(imn) = dsR * SM

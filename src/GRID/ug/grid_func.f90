@@ -19,8 +19,9 @@ module grid_func
     
     ! default guard cells
     Gpts = 2  
-    if (to_upper(trim(recon_method)) == "WENO3") Gpts = 2
+    !if (to_upper(trim(recon_method)) == "WENO3") Gpts = 2
     if (to_upper(trim(recon_method)) == "WENO5") Gpts = 3
+    if (to_upper(trim(recon_method)) == "PPM") Gpts = 3
  
     ! local interior points 
     lnx = nx / xblk

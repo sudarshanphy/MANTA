@@ -324,6 +324,96 @@ contains
         end do  !dir
   end subroutine get_facevalue_weno5z
 
+  ! GAMER-style spatial PPM with van Leer + generalized minmod limiting.
+  real function ppm_limited_slope(qm, qc, qp) result(slope)
+    !$OMP DECLARE TARGET
+    implicit none
+    real, intent(in) :: qm, qc, qp
+    real, parameter :: theta_ppm = 1.5
+    real :: dl, dr, dc, dvl
+
+    dl = qc - qm
+    dr = qp - qc
+    dc = 0.5 * (dl + dr)
+    slope = 0.0
+    if (dl*dr > 0.0) then
+       dvl = 2.0*dl*dr/(dl + dr)
+       slope = sign(1.0, dc) * &
+               min(theta_ppm*abs(dl), theta_ppm*abs(dr), abs(dc), abs(dvl))
+    end if
+  end function ppm_limited_slope
+
+  subroutine get_facevalue_ppm(solnVar, recon_plus, recon_minus, check)
+    use sim_data, only: ilo, ihi, jlo, jhi, iGlo, iGhi, jGlo, jGhi
+    implicit none
+    real, dimension(1:, iGlo:, jGlo:), intent(in) :: solnVar
+    real, dimension(NDIM, NCONSVAR_NUMBER, iGlo:iGhi, jGlo:jGhi), &
+          intent(inout) :: recon_plus, recon_minus
+    logical, intent(in), optional :: check
+    integer :: i, j, n, dir, is, js
+    real :: qm2, qm1, q, qp1, qp2, slope_m, slope_c, slope_p
+    real :: fplus12, fminus12, dq, q6
+
+    if (NDIM /= 2) error stop 'PPM reconstruction supports the current 2-D grid only'
+
+    do dir = 1, NDIM
+       select case (dir)
+       case (IAXIS)
+          is = 1; js = 0
+       case (JAXIS)
+          is = 0; js = 1
+       end select
+
+       !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
+       !$OMP MAP(TO: solnVar) MAP(TOFROM: recon_plus, recon_minus) &
+       !$OMP FIRSTPRIVATE(is, js, dir, ilo, ihi, jlo, jhi) &
+       !$OMP PRIVATE(qm2, qm1, q, qp1, qp2, slope_m, slope_c, slope_p) &
+       !$OMP PRIVATE(fplus12, fminus12, dq, q6)
+       do j = jGlo, jGhi
+          do i = iGlo, iGhi
+             do n = 1, NCONSVAR_NUMBER
+                ! Initialize all output slots on the device. Only the
+                ! one-cell reconstruction halo is read by get_flux.
+                recon_plus(dir,n,i,j) = 0.0
+                recon_minus(dir,n,i,j) = 0.0
+                if (i < ilo-1 .or. i > ihi+1 .or. &
+                    j < jlo-1 .or. j > jhi+1) cycle
+
+                qm2 = solnVar(n,i-2*is,j-2*js)
+                qm1 = solnVar(n,i-is,j-js)
+                q   = solnVar(n,i,j)
+                qp1 = solnVar(n,i+is,j+js)
+                qp2 = solnVar(n,i+2*is,j+2*js)
+
+                slope_m = ppm_limited_slope(qm2, qm1, q)
+                slope_c = ppm_limited_slope(qm1, q, qp1)
+                slope_p = ppm_limited_slope(q, qp1, qp2)
+
+                fminus12 = 0.5*(qm1 + q) - (slope_c - slope_m)/6.0
+                fplus12  = 0.5*(q + qp1) - (slope_p - slope_c)/6.0
+
+                dq = fplus12 - fminus12
+                q6 = 6.0*(q - 0.5*(fminus12 + fplus12))
+                if ((fplus12-q)*(q-fminus12) <= 0.0) then
+                   fminus12 = q
+                   fplus12 = q
+                else if (dq*q6 > dq*dq) then
+                   fminus12 = 3.0*q - 2.0*fplus12
+                else if (dq*q6 < -dq*dq) then
+                   fplus12 = 3.0*q - 2.0*fminus12
+                end if
+
+                fminus12 = min(max(fminus12, min(qm1,q)), max(qm1,q))
+                fplus12  = min(max(fplus12, min(q,qp1)), max(q,qp1))
+                recon_minus(dir,n,i,j) = fminus12
+                recon_plus(dir,n,i,j) = fplus12
+             end do
+          end do
+       end do
+       !$OMP END TARGET TEAMS DISTRIBUTE PARALLEL DO
+    end do
+  end subroutine get_facevalue_ppm
+
   subroutine recon_getcellfaces(solnVar, recon_plus, recon_minus)
 
         use sim_data, only: xTpts, yTpts, dx, dy, gamma, ilo, ihi, jlo, jhi, & 
@@ -344,6 +434,8 @@ contains
                 call get_facevalue_tvd(solnVar, recon_plus, recon_minus)
         else if (to_upper(trim(recon_method)) == "WENO5") then
                 call get_facevalue_weno5z(solnVar, recon_plus, recon_minus)
+        elseif (to_upper(trim(recon_method)) == "PPM") then
+           call get_facevalue_ppm(solnVar, recon_plus, recon_minus)
         end if
     end subroutine recon_getcellfaces
 
