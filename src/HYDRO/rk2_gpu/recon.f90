@@ -350,8 +350,8 @@ contains
 
   ! GAMER-style spatial PPM with van Leer + generalized minmod limiting.
   real function ppm_limited_slope(qm, qc, qp) result(slope)
-    !$OMP DECLARE TARGET
     implicit none
+    !$OMP DECLARE TARGET
     real, intent(in) :: qm, qc, qp
     real, parameter :: theta_ppm = 1.5
     real :: dl, dr, dc, dvl
