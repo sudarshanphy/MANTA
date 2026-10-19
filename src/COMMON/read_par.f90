@@ -1,5 +1,4 @@
 subroutine read_par()
-        
         ! this subroutine reads from the parameter file and 
         ! passes the values as output
         use sim_data 
@@ -13,16 +12,16 @@ subroutine read_par()
         integer :: line = 0 ! tracks number of lines in the paramter file
 
         ! set some default values, incase the user doesn't provide
-        xmin = 0.0; xmax = 1.0; ymin = 0.0; ymax = 1.0
-        nx = 10; ny = 10; restart_no = 0; restart_step = 0
+        xmin = 0.0; xmax = 1.0; ymin = 0.0; ymax = 1.0; zmin = 0.0; zmax = 1.0
+        nx = 10; ny = 10; nz=10; restart_no = 0; restart_step = 0
         t0 = 0.0; tf = 0.5; dt = 1.0e-4; out_dt = 1.0e-3
         gamma = 1.4; cfl = 0.4; grav = 0.0
-        xlbctype = "flow"; ylbctype = "flow" 
-        xrbctype = "flow"; yrbctype = "flow"
+        xlbctype = "flow"; ylbctype = "flow"; zlbctype = "flow" 
+        xrbctype = "flow"; yrbctype = "flow"; zrbctype = "flow"
         nend = 10000; 
         basenm = "def"; restart = .false.; usegrav = .false.;
         recon_method = "weno3"; flux_solver = "hlle";
-        xblk = 1; yblk = 1; outdir = "./"
+        xblk = 1; yblk = 1; zblk = 1; outdir = "./"
  
         open(no, file='./input.par')
 
@@ -35,10 +34,16 @@ subroutine read_par()
            if (ios == 0) then
               line = line + 1 ! count the line
 
-              ! Find the first instance of whitespace.  Split label and data.
+              ! skip empty lines and comments
+              buffer = adjustl(buffer)
+              if (len_trim(buffer) == 0) cycle
+              if (buffer(1:1) == '#' .or. buffer(1:1) == '!') cycle
+              
+              ! split the label and value at =
               pos = scan(buffer, '=')
-              label = buffer(1:pos-2) ! this makes sure that we just read the label
-              buffer = buffer(pos+1:) ! this is to read the value of the label
+              if (pos <= 1) cycle
+              label = trim(adjustl(buffer(:pos-1))) ! parameter name
+              buffer = buffer(pos+1:) ! parameter value
 
               select case (label) ! based on the label, now assign values to predefined varaibles
               case ('xmin')
@@ -49,14 +54,22 @@ subroutine read_par()
                  read(buffer, *, iostat=ios) ymin
               case ('ymax')
                  read(buffer, *, iostat=ios) ymax
+              case ('zmin')
+                 read(buffer, *, iostat=ios) zmin
+              case ('zmax')
+                 read(buffer, *, iostat=ios) zmax
               case ('xblk')
                  read(buffer, *, iostat=ios) xblk
               case ('yblk')
                  read(buffer, *, iostat=ios) yblk
+              case ('zblk')
+                 read(buffer, *, iostat=ios) zblk
               case ('nx')
                  read(buffer, *, iostat=ios) nx
               case ('ny')
                  read(buffer, *, iostat=ios) ny
+              case ('nz')
+                 read(buffer, *, iostat=ios) nz
               case ('t0')
                  read(buffer, *, iostat=ios) t0
               case ('tf')
@@ -81,6 +94,10 @@ subroutine read_par()
                  read(buffer, *, iostat=ios) ylbctype
               case ('yrbctype')
                  read(buffer, *, iostat=ios) yrbctype
+              case ('zlbctype')
+                 read(buffer, *, iostat=ios) zlbctype
+              case ('zrbctype')
+                 read(buffer, *, iostat=ios) zrbctype
               case ('nend')
                  read(buffer, *, iostat=ios) nend
               case ('basenm')

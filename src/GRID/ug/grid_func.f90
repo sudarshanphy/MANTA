@@ -9,47 +9,70 @@ module grid_func
     use misc_module, only: to_upper
     use boundary_func, only: boundary_init
     implicit none
-  
+
+! inactive axes
+#if NDIM == 1
+    ny = 1
+    yblk = 1
+#endif
+#if NDIM < 3
+    nz = 1
+    zblk = 1
+#endif
+
     dx = (xmax - xmin) / nx
     dy = (ymax - ymin) / ny
+    dz = (zmax - zmin) / nz
    
     ! xrank and yrank 
     xrank = mod(myrank, xblk)
-    yrank = floor(real(myrank)/xblk)
+    yrank = mod(myrank/xblk, yblk)
+    zrank = myrank / (xblk * yblk)
     
     ! default guard cells
     Gpts = 2  
     !if (to_upper(trim(recon_method)) == "WENO3") Gpts = 2
     if (to_upper(trim(recon_method)) == "WENO5") Gpts = 3
     if (to_upper(trim(recon_method)) == "PPM") Gpts = 3
- 
+
+    nghost = 0
+    nghost(1:NDIM) = Gpts
+
     ! local interior points 
     lnx = nx / xblk
     lny = ny / yblk
+    lnz = nz / zblk
   
     ! compute index of interior points 
     ilo = xrank * lnx + 1
     ihi = (xrank + 1) * lnx  
     jlo = yrank * lny + 1
     jhi = (yrank + 1) * lny 
+    klo = zrank * lnz + 1
+    khi = (zrank + 1) * lnz 
  
     ! compute index of interior + guard cells
-    iGlo = ilo - Gpts
-    iGhi = ihi + Gpts
-    jGlo = jlo - Gpts
-    jGhi = jhi + Gpts
+    iGlo = ilo - nghost(IAXIS) 
+    iGhi = ihi + nghost(IAXIS) 
+    jGlo = jlo - nghost(JAXIS) 
+    jGhi = jhi + nghost(JAXIS) 
+    kGlo = klo - nghost(KAXIS) 
+    kGhi = khi + nghost(KAXIS) 
  
     ! total number of local points 
-    lxTpts = lnx + 2 * Gpts
-    lyTpts = lny + 2 * Gpts
+    lxTpts = lnx + 2 * nghost(IAXIS) 
+    lyTpts = lny + 2 * nghost(JAXIS) 
+    lzTpts = lnz + 2 * nghost(KAXIS) 
   
     ! local min and max
     lxmin = xmin + (ilo - 1) * dx
     lxmax = xmin + ihi * dx
-    lymin = ymin + (jlo - 1) * dx
-    lymax = ymin + jhi * dx
+    lymin = ymin + (jlo - 1) * dy
+    lymax = ymin + jhi * dy
+    lzmin = zmin + (klo - 1) * dz
+    lzmax = zmin + khi * dz
   
-    allocate(mainVar(NVAR_NUMBER, iGlo:iGhi, jGlo:jGhi))
+    allocate(mainVar(NVAR_NUMBER, iGlo:iGhi, jGlo:jGhi, kGlo:kGhi))
 
     !set all the small values
     smalld = 1.0e-10
@@ -61,7 +84,7 @@ module grid_func
     !                                              at_ylboundary, at_yrboundary 
     !print *, "myrank, ilo, ihi, jlo, jhi = ", myrank, ilo, ihi, jlo, jhi
 
-    call boundary_init(ilo,ihi,jlo,jhi,nx,ny)
+    call boundary_init(ilo,ihi,jlo,jhi,klo,khi,nx,ny,nz)
 
   end subroutine grid_init
 
@@ -73,7 +96,7 @@ module grid_func
   end subroutine
 
   subroutine get_coords(Dir,lo,hi,array)
-    use sim_data, only: xmin, ymin, dx, dy
+    use sim_data, only: xmin, ymin, zmin, dx, dy, dz
     implicit none
     integer, intent(in) :: Dir
     integer, intent(in) :: lo, hi
@@ -90,8 +113,11 @@ module grid_func
     case (JAXIS)
       lmin = ymin
       delta = dy
+    case (KAXIS)
+      lmin = zmin
+      delta = dz
     case default
-      print *, "Direction is X or Y only"
+      print *, "Direction is X, Y or Z"
       stop
     end select
 

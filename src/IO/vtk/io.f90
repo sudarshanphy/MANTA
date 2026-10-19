@@ -5,27 +5,22 @@ contains
 
   subroutine write_output(t, step, outputno, restart_init)
     use mpi, only: MPI_COMM_WORLD, MPI_Barrier, MPI_Comm_size
-    use sim_data, only: nx, ny, xmin, ymin, dx, dy, basenm, outdir, myrank, &
-                        xblk, yblk, lnx, lny, &
-                        ilo, ihi, jlo, jhi, iGlo, iGhi, jGlo, jGhi, mainVar
+    use sim_data, only: nx, ny, nz, xmin, ymin, zmin, dx, dy, dz, basenm, outdir, myrank, &
+                        xblk, yblk, lnx, lny, lnz, &
+                        ilo, ihi, jlo, jhi, klo, khi, iGlo, jGlo, kGlo, mainVar
     implicit none
 
     real,    intent(in) :: t
     integer, intent(in) :: step, outputno
     logical, optional, intent(in) :: restart_init
 
-#if NDIM == 3
-    stop "write_output: NDIM==3 requires mainVar to be 4D (nvar,i,j,k). Not supported yet."
-#endif
-
-    real, pointer :: solnVar(:,:,:)
+    real, pointer :: solnVar(:,:,:,:)
 
     integer :: ierr, nprocs
-    integer :: nxc, nyc, ncells
     integer :: i0p, i1p, j0p, j1p, k0p, k1p
     integer :: whole_i0, whole_i1, whole_j0, whole_j1, whole_k0, whole_k1
     integer :: ionum
-    integer :: r, xr, yr, ilo_r, ihi_r, jlo_r, jhi_r
+    integer :: r, xr, yr, zr, ilo_r, ihi_r, jlo_r, jhi_r, klo_r, khi_r
     character(len=10)  :: int_to_str, rank_to_str
     character(len=256) :: subdir, vti_name, pvti_name, cmd
     real(8) :: zorigin, dz_out, dy_out
@@ -69,32 +64,28 @@ contains
     end if
     call MPI_Barrier(MPI_COMM_WORLD, ierr)
 
-    ! sizes (interior only)
-    nxc = ihi - ilo + 1
-#if NDIM == 2
-    nyc = jhi - jlo + 1
-#else
-    nyc = 1
-#endif
-    ncells = nxc * nyc
-
     ! local point extents (inclusive)
     i0p = ilo - 1
     i1p = ihi
-#if NDIM == 2
+#if NDIM >= 2
     j0p = jlo - 1
     j1p = jhi
 #else
     j0p = 0
     j1p = 0
 #endif
+#if NDIM == 3
+    k0p = klo - 1
+    k1p = khi
+#else
     k0p = 0
     k1p = 0
+#endif
 
     ! global point extents
     whole_i0 = 0
     whole_i1 = nx
-#if NDIM == 2
+#if NDIM >= 2
     whole_j0 = 0
     whole_j1 = ny
 #else
@@ -102,18 +93,27 @@ contains
     whole_j1 = 0
 #endif
     whole_k0 = 0
+#if NDIM == 3
+    whole_k1 = nz
+#else
     whole_k1 = 0
+#endif
 
-    ! 1D/2D: dummy z
+    ! collapsed axes have zero extent
+#if NDIM == 3
+    zorigin = zmin
+    dz_out = dz
+#else
     zorigin = 0.0
-    dz_out  = 1.0
-#if NDIM == 2
+    dz_out = 1.0
+#endif
+#if NDIM >= 2
     dy_out  = dy
 #else
     dy_out  = 1.0
 #endif
 
-    solnVar(1:, iGlo:, jGlo:) => mainVar(1:,:,:)
+    solnVar(1:, iGlo:, jGlo:, kGlo:) => mainVar
 
     ! ----------------------------
     ! Write per-rank .vti
@@ -140,22 +140,32 @@ contains
 
     write(ionum,'(A)') '      <CellData Scalars="dens">'
 
-    call write_scalar(u=ionum, name="dens",  solnVar=solnVar, ivar=IDENS, ilo=ilo, ihi=ihi, jlo=jlo, jhi=jhi)
+    call write_scalar(u=ionum, name="dens",  solnVar=solnVar, ivar=IDENS, ilo=ilo, ihi=ihi, &
+                      jlo=jlo, jhi=jhi, klo=klo, khi=khi)
 
-    call write_scalar(u=ionum, name="velx",  solnVar=solnVar, ivar=IVX,   ilo=ilo, ihi=ihi, jlo=jlo, jhi=jhi)
-    call write_scalar(u=ionum, name="vely",  solnVar=solnVar, ivar=IVY,   ilo=ilo, ihi=ihi, jlo=jlo, jhi=jhi)
-    call write_scalar(u=ionum, name="velz",  solnVar=solnVar, ivar=IVZ,   ilo=ilo, ihi=ihi, jlo=jlo, jhi=jhi)
+    call write_scalar(u=ionum, name="velx",  solnVar=solnVar, ivar=IVX,   ilo=ilo, ihi=ihi, &
+                      jlo=jlo, jhi=jhi, klo=klo, khi=khi)
+    call write_scalar(u=ionum, name="vely",  solnVar=solnVar, ivar=IVY,   ilo=ilo, ihi=ihi, &
+                      jlo=jlo, jhi=jhi, klo=klo, khi=khi)
+    call write_scalar(u=ionum, name="velz",  solnVar=solnVar, ivar=IVZ,   ilo=ilo, ihi=ihi, &
+                      jlo=jlo, jhi=jhi, klo=klo, khi=khi)
 
-    call write_scalar(u=ionum, name="pres",  solnVar=solnVar, ivar=IPRES, ilo=ilo, ihi=ihi, jlo=jlo, jhi=jhi)
+    call write_scalar(u=ionum, name="pres",  solnVar=solnVar, ivar=IPRES, ilo=ilo, ihi=ihi, &
+                      jlo=jlo, jhi=jhi, klo=klo, khi=khi)
 
 #ifdef MHD
-    call write_scalar(u=ionum, name="bmfx",  solnVar=solnVar, ivar=IBX,   ilo=ilo, ihi=ihi, jlo=jlo, jhi=jhi)
-    call write_scalar(u=ionum, name="bmfy",  solnVar=solnVar, ivar=IBY,   ilo=ilo, ihi=ihi, jlo=jlo, jhi=jhi)
-    call write_scalar(u=ionum, name="bmfz",  solnVar=solnVar, ivar=IBZ,   ilo=ilo, ihi=ihi, jlo=jlo, jhi=jhi)
-    call write_scalar(u=ionum, name="bpsi",  solnVar=solnVar, ivar=IBPSI, ilo=ilo, ihi=ihi, jlo=jlo, jhi=jhi)
+    call write_scalar(u=ionum, name="bmfx",  solnVar=solnVar, ivar=IBX,   ilo=ilo, ihi=ihi, &
+                      jlo=jlo, jhi=jhi, klo=klo, khi=khi)
+    call write_scalar(u=ionum, name="bmfy",  solnVar=solnVar, ivar=IBY,   ilo=ilo, ihi=ihi, &
+                      jlo=jlo, jhi=jhi, klo=klo, khi=khi)
+    call write_scalar(u=ionum, name="bmfz",  solnVar=solnVar, ivar=IBZ,   ilo=ilo, ihi=ihi, &
+                      jlo=jlo, jhi=jhi, klo=klo, khi=khi)
+    call write_scalar(u=ionum, name="bpsi",  solnVar=solnVar, ivar=IBPSI, ilo=ilo, ihi=ihi, &
+                      jlo=jlo, jhi=jhi, klo=klo, khi=khi)
 #endif
 
-    call write_scalar(u=ionum, name="ener",  solnVar=solnVar, ivar=IENER, ilo=ilo, ihi=ihi, jlo=jlo, jhi=jhi)
+    call write_scalar(u=ionum, name="ener",  solnVar=solnVar, ivar=IENER, ilo=ilo, ihi=ihi, &
+                      jlo=jlo, jhi=jhi, klo=klo, khi=khi)
 
     write(ionum,'(A)') '      </CellData>'
     write(ionum,'(A)') '    </Piece>'
@@ -209,26 +219,35 @@ contains
 
       do r = 0, nprocs-1
         xr = mod(r, xblk)
-        yr = r / xblk
+        yr = mod(r / xblk, yblk)
+        zr = r / (xblk * yblk)
 
         ilo_r = xr * lnx + 1
         ihi_r = (xr + 1) * lnx
-#if NDIM == 2
+#if NDIM >= 2
         jlo_r = yr * lny + 1
         jhi_r = (yr + 1) * lny
 #else
         jlo_r = 1
-        jhi_r = 1
+        jhi_r = 0
+#endif
+
+#if NDIM == 3
+        klo_r = zr * lnz + 1
+        khi_r = (zr + 1) * lnz
+#else
+        klo_r = 1
+        khi_r = 0
 #endif
 
         write(rank_to_str, "(I4.4)") r
 
         if (present(restart_init)) then
-          write(ionum,'(A)') '    <Piece Extent="'//trim(extent_str(ilo_r-1,ihi_r, jlo_r-1,jhi_r, 0,0))// &
+          write(ionum,'(A)') '    <Piece Extent="'//trim(extent_str(ilo_r-1,ihi_r, jlo_r-1,jhi_r, klo_r-1,khi_r))// &
                              '" Source="vti_reinit_'//trim(adjustl(int_to_str))//'/'//trim(adjustl(basenm))// &
                              '_reinit_'//trim(adjustl(rank_to_str))//'_'//trim(adjustl(int_to_str))//'.vti"/>'
         else
-          write(ionum,'(A)') '    <Piece Extent="'//trim(extent_str(ilo_r-1,ihi_r, jlo_r-1,jhi_r, 0,0))// &
+          write(ionum,'(A)') '    <Piece Extent="'//trim(extent_str(ilo_r-1,ihi_r, jlo_r-1,jhi_r, klo_r-1,khi_r))// &
                              '" Source="vti_'//trim(adjustl(int_to_str))//'/'//trim(adjustl(basenm))// &
                              '_'//trim(adjustl(rank_to_str))//'_'//trim(adjustl(int_to_str))//'.vti"/>'
         endif
@@ -265,30 +284,24 @@ contains
     write(u,'(A)') '      <PDataArray type="Float64" Name="'//trim(name)//'" NumberOfComponents="1"/>'
   end subroutine write_p_scalar
 
-  subroutine write_scalar(u, name, solnVar, ivar, ilo, ihi, jlo, jhi)
-    integer, intent(in) :: u, ivar, ilo, ihi, jlo, jhi
+  subroutine write_scalar(u, name, solnVar, ivar, ilo, ihi, jlo, jhi, klo, khi)
+    integer, intent(in) :: u, ivar, ilo, ihi, jlo, jhi, klo, khi
     character(len=*), intent(in) :: name
-    real, pointer :: solnVar(:,:,:)
-    integer :: i, j, cnt
+    real, pointer :: solnVar(:,:,:,:)
+    integer :: i, j, k, cnt
 
     write(u,'(A)') '        <DataArray type="Float64" Name="'//trim(name)//'" NumberOfComponents="1" format="ascii">'
     cnt = 0
-#if NDIM == 2
-    do j = jlo, jhi
-      do i = ilo, ihi
-        write(u,'(ES25.18,1x)', advance='no') solnVar(ivar,i,j)
-        cnt = cnt + 1
-        if (mod(cnt,6) == 0) write(u,*)
+    ! VTK order: x first, then y, then z
+    do k = klo, khi
+      do j = jlo, jhi
+        do i = ilo, ihi
+          write(u,'(ES25.18,1x)', advance='no') solnVar(ivar,i,j,k)
+          cnt = cnt + 1
+          if (mod(cnt,6) == 0) write(u,*)
+        end do
       end do
     end do
-#else
-    j = jlo
-    do i = ilo, ihi
-      write(u,'(ES25.18,1x)', advance='no') solnVar(ivar,i,j)
-      cnt = cnt + 1
-      if (mod(cnt,6) == 0) write(u,*)
-    end do
-#endif
     write(u,*)
     write(u,'(A)') '        </DataArray>'
   end subroutine write_scalar

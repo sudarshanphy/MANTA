@@ -2,198 +2,132 @@ import os
 import sys
 import shutil
 
-def parse_arguments():
-    """
-    Parse command-line arguments in the form +key=value.
-    Returns a dictionary of arguments with default values.
 
-    Defaults:
-        simulation: 'sedov'
-        hydro: 'rk2'
-        make: 'linux'
-        objdir: 'build'
-        run: 'hd'
-        gpu: 'false'
-        io: 'txt'
-        grid: 'ug'
-    """
-    # Define default values for all possible arguments
-    defaults = {
+def parse_arguments():
+    # Default settings
+    args = {
         'simulation': 'sedov',
         'hydro': 'rk2_gpu',
         'make': 'linux',
         'objdir': 'build',
         'run': 'hd',
+        'ndim': '2',
         'gpu': 'false',
-        'io': 'txt', 
+        'io': 'txt',
         'grid': 'ug'
     }
 
-    # Parse command-line arguments, overriding defaults
     for arg in sys.argv[1:]:
-        # If user wants to know about configuration setting
-        if arg.startswith('-') and (("help" in arg) or ("h" in arg)):
-            print("Following are the setup default configurations:")
-            print(defaults)
-            print("Run as: ./setup +key=value")
-            sys.exit(1)
+        if arg in ('-h', '--help'):
+            print('Run as: ./setup +key=value')
+            print('Options:', args)
+            print('run: hd or mhd; ndim: 1, 2 or 3')
+            sys.exit(0)
         if arg.startswith('+') and '=' in arg:
             key, value = arg[1:].split('=', 1)
-            if key in defaults:  # Only accept known keys
-                defaults[key] = value
+            if key in args:
+                args[key] = value
             else:
-                print(f"Ignored +{key} = {value} as {key} is not recognized!")
-    # Use correct subdirectory while using GPU
-    #if defaults['gpu'] == "true":
-    #    defaults['hydro'] = defaults['hydro'] + '_gpu'
-    return defaults
+                raise ValueError(f'Unknown option: {key}')
+        else:
+            raise ValueError(f'Invalid argument: {arg}')
+
+    if args['run'] not in ('hd', 'mhd'):
+        raise ValueError('run must be hd or mhd')
+    if args['ndim'] not in ('1', '2', '3'):
+        raise ValueError('ndim must be 1, 2 or 3')
+    if args['gpu'] not in ('true', 'false'):
+        raise ValueError('gpu must be true or false')
+
+    return args
+
 
 def validate_paths(args):
-    """
-    Validate that required files and directories exist.
-    Returns a tuple of validated paths and module implementations.
-    """
-    FilePath = "./"
-    # Validate Makefile location
-    site_dir = os.path.join(FilePath+'sites', args['make'])
-    site_makefile = os.path.join(site_dir, 'Makefile')
-    # if we are using gpu for our run
-    if (args['gpu'] == "true"):
-        site_makefile = os.path.join(site_dir, 'Makefile.gpu')
-    if not os.path.exists(site_makefile):
-        raise FileNotFoundError(f"Makefile not found: {site_makefile}")
-    
-    # Create object directory if needed
-    objdir = FilePath+args['objdir']
-    if os.path.exists(objdir):
-        shutil.rmtree(objdir)
-    os.makedirs(objdir)
+    # Check inputs before clearing the build
+    makefile = 'Makefile.gpu' if args['gpu'] == 'true' else 'Makefile'
+    site_makefile = os.path.join('sites', args['make'], makefile)
+    if not os.path.isfile(site_makefile):
+        raise FileNotFoundError(f'Makefile not found: {site_makefile}')
 
-    #Build module implementation map
+    if not os.path.isfile('src/COMMON/param.h'):
+        raise FileNotFoundError('Shared header not found: src/COMMON/param.h')
+
     module_impls = {}
-    
-    for module, impl in args.items():
-        if module not in ['make', 'objdir', 'run', 'gpu']:
-            module_dir = os.path.join('src', module.upper())
-            impl_dir = os.path.join(module_dir, f"{impl}")
+    for module in ('hydro', 'io', 'grid', 'simulation'):
+        impl_dir = os.path.join('src', module.upper(), args[module])
+        if not os.path.isdir(impl_dir):
+            raise FileNotFoundError(f'Implementation folder not found: {impl_dir}')
+        module_impls[module] = impl_dir
 
-            if not os.path.isdir(impl_dir):
-                raise FileNotFoundError(
-                    f"Implementation folder not found for {module}: {impl_dir}\n"
-                )
-            module_impls[module] = impl_dir
-    
+    objdir = os.path.realpath(args['objdir'])
+    repo = os.path.realpath('.')
+    # Protect project files
+    if os.path.islink(args['objdir']):
+        raise ValueError('Build directory must not be a symlink')
+    for protected in (repo, os.path.join(repo, 'src'),
+                      os.path.join(repo, 'sites'), os.path.join(repo, 'bin'),
+                      os.path.join(repo, '.git'), os.path.join(repo, 'notes'),
+                      os.path.join(repo, 'par_files'), os.path.join(repo, 'test_files'),
+                      os.path.join(repo, 'python_scripts'), os.path.join(repo, 'bash_scripts')):
+        common = os.path.commonpath((objdir, protected))
+        if common == objdir or (protected != repo and common == protected):
+            raise ValueError(f'Unsafe build directory: {objdir}')
+
     return site_makefile, objdir, module_impls
 
 
-def copy_src_files(objdir, module_impls, args):
-    src_dir = "src"
-    
-    dest_dir = objdir
-    for root, dirs, files in os.walk(src_dir):
-        # Skip hidden directories
-        dirs[:] = [d for d in dirs if not d.startswith('.')]
-        # Create corresponding destination directory
-        rel_path = os.path.relpath(root, src_dir)
-        dest_path = os.path.join(objdir)
-
-        # Copy all files from the COMMON directory
-        if (rel_path == "COMMON"):
-            for file in files:
-                src_file = os.path.join(root, file)
-                dest_file = os.path.join(dest_path,file)
-                shutil.copy(src_file, dest_file)
-                print(f"Copied: {src_file}")
+def copy_files(source, objdir):
+    for name in sorted(os.listdir(source)):
+        src_file = os.path.join(source, name)
+        if not name.startswith('.') and os.path.isfile(src_file):
+            shutil.copy(src_file, os.path.join(objdir, name))
+            print(f'Copied: {src_file}')
 
 
-        #List of directories don't have any sub directory inside "src"
-        NoSubDir = ["HD_h", "MHD_h"]
-        Keys = ["run","run"]
-        value = ["hd","mhd"]
+def copy_src_files(objdir, module_impls):
+    copy_files('src', objdir)
+    copy_files('src/COMMON', objdir)
 
-        #List of directoires with sub-directory and implementation
-        SubDirList = ["HYDRO", "IO", "GRID"]
-        
-        
-        # Copy all the files from root directories
-        if (root == src_dir):
-            for file in files:
-                
-                src_file = os.path.join(root, file)
-                dest_file = os.path.join(dest_path, file)
-                #print(src_file, dest_file)
-                shutil.copy(src_file, dest_path)
-                print(f"Copied: {src_file}")
-        # Loop over these directories with no sub-directories
-        # And copy over the files
-        for kk in range(len(NoSubDir)):
-            if ((args[Keys[kk]]) == value[kk]) and (rel_path == NoSubDir[kk]):
-                for file in files:
-                    
-                    src_file = os.path.join(root, file)
-                    dest_file = os.path.join(dest_path,file)
-                    shutil.copy(src_file, dest_file)
-                    print(f"Copied: {src_file}")
-                    
-        for ii in SubDirList:
-            if (rel_path == ii.upper()):
-                for file in files:
-                    src_file = os.path.join(root, file)
-                    dest_file = os.path.join(dest_path,file)
-                    shutil.copy(src_file, dest_file)
-                    print(f"Copied: {src_file}")
-                for thisDir, subDir, files in os.walk(root):
-                    if (thisDir == module_impls[ii.lower()]):
-                        for file in files:
-                            src_file = os.path.join(thisDir, file)
-                            dest_file = os.path.join(dest_path,file)
-                            shutil.copy(src_file, dest_file)
-                            print(f"Copied: {src_file}")
-                            
-    # copy correct files from the problem                    
-    for root, dirs, files in os.walk(src_dir):
-        rel_path = os.path.relpath(root, src_dir)
-        if (rel_path == "SIMULATION"): 
-            for file in files: # copy files inside the src/SIMULATION
-                src_file = os.path.join(root, file)
-                dest_file = os.path.join(dest_path,file)
-                shutil.copy(src_file, dest_file)
-                print(f"Copied: {src_file}")
-        if (root == module_impls["simulation"]):
-            for file in files: # copy files inside the src/SIMULATION/problem
-                src_file = os.path.join(root, file)
-                dest_file = os.path.join(dest_path,file)
-                shutil.copy(src_file, dest_file)
-                print(f"Copied: {src_file}")      
-    return
+    for module in ('hydro', 'io', 'grid', 'simulation'):
+        copy_files(os.path.join('src', module.upper()), objdir)
+        copy_files(module_impls[module], objdir)
 
-       
+
+def write_config(objdir, args):
+    # Build settings
+    lines = [
+        f"#define NDIM {args['ndim']}"
+    ]
+    if args['run'] == 'mhd':
+        lines.append('#define MHD')
+    lines.append('')
+
+    with open(os.path.join(objdir, 'config.h'), 'w') as config:
+        config.write('\n'.join(lines))
+
 
 def main():
     try:
-        # Parse arguments with defaults
         args = parse_arguments()
-        print("Configuration settings:")
-        for k, v in args.items():
-            print(f"  {k}: {v}")
+        print('Configuration settings:')
+        for key, value in args.items():
+            print(f'  {key}: {value}')
 
-        # Validate paths and get module implementations
         site_makefile, objdir, module_impls = validate_paths(args)
+        if os.path.exists(objdir):
+            shutil.rmtree(objdir)
+        os.makedirs(objdir)
 
-        # Copy Makefile
         shutil.copy(site_makefile, os.path.join(objdir, 'Makefile'))
-        print(f"Copied: {site_makefile} as Makefile")
+        copy_src_files(objdir, module_impls)
+        write_config(objdir, args)
 
-        copy_src_files(objdir, module_impls, args)
-
-        print("\nBuild configuration completed successfully!")
-        print(f"Object directory: {objdir}")
-        
-    except Exception as e:
-        print(f"\nError: {str(e)}", file=sys.stderr)
+        print('\nBuild configuration completed successfully!')
+        print(f'Object directory: {objdir}')
+    except Exception as error:
+        print(f'\nError: {error}', file=sys.stderr)
         sys.exit(1)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
-

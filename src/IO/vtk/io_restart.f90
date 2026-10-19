@@ -5,23 +5,18 @@ contains
 
   subroutine restart_problem(fno, time)
     use sim_data, only: basenm, outdir, myrank, &
-                        ilo, ihi, jlo, jhi, iGlo, iGhi, jGlo, jGhi, mainVar
+                        ilo, ihi, jlo, jhi, klo, khi, iGlo, jGlo, kGlo, mainVar
     implicit none
 
     integer, intent(in) :: fno
     real,    intent(out):: time
 
-#if NDIM == 3
-    stop "restart_problem: NDIM==3 requires mainVar 4D (nvar,i,j,k). Not supported yet."
-#endif
-
-    real, pointer :: solnVar(:,:,:)
+    real, pointer :: solnVar(:,:,:,:)
 
     character(len=10)  :: int_to_str, rank_to_str
     character(len=256) :: fname, subdir
     integer :: u, ios
-    integer :: nxc, nyc, ncells
-    integer :: i, j, idx
+    integer :: ncells
     real(8), allocatable :: buf(:)
 
     integer, parameter :: IDENS = DENS_VAR
@@ -54,16 +49,10 @@ contains
       if (ios /= 0) stop "restart_problem: cannot open .vti restart file"
     end if
 
-    nxc = ihi - ilo + 1
-#if NDIM == 2
-    nyc = jhi - jlo + 1
-#else
-    nyc = 1
-#endif
-    ncells = nxc * nyc
+    ncells = (ihi-ilo+1) * (jhi-jlo+1) * (khi-klo+1)
 
-    solnVar(1:, iGlo:, jGlo:) => mainVar(1:,:,:)
-    solnVar(:,:,:) = 0.0
+    solnVar(1:, iGlo:, jGlo:, kGlo:) => mainVar
+    solnVar = 0.0
 
     ! time
     call seek_to_dataarray(u, 'TIME')
@@ -71,22 +60,22 @@ contains
     time = real(buf(1))
     deallocate(buf)
 
-    call read_scalar_into(u, "dens",  ncells, solnVar, IDENS, ilo, ihi, jlo, jhi)
+    call read_scalar_into(u, "dens",  ncells, solnVar, IDENS, ilo, ihi, jlo, jhi, klo, khi)
 
-    call read_scalar_into(u, "velx",  ncells, solnVar, IVX,   ilo, ihi, jlo, jhi)
-    call read_scalar_into(u, "vely",  ncells, solnVar, IVY,   ilo, ihi, jlo, jhi)
-    call read_scalar_into(u, "velz",  ncells, solnVar, IVZ,   ilo, ihi, jlo, jhi)
+    call read_scalar_into(u, "velx",  ncells, solnVar, IVX,   ilo, ihi, jlo, jhi, klo, khi)
+    call read_scalar_into(u, "vely",  ncells, solnVar, IVY,   ilo, ihi, jlo, jhi, klo, khi)
+    call read_scalar_into(u, "velz",  ncells, solnVar, IVZ,   ilo, ihi, jlo, jhi, klo, khi)
 
-    call read_scalar_into(u, "pres",  ncells, solnVar, IPRES, ilo, ihi, jlo, jhi)
+    call read_scalar_into(u, "pres",  ncells, solnVar, IPRES, ilo, ihi, jlo, jhi, klo, khi)
 
 #ifdef MHD
-    call read_scalar_into(u, "bmfx",  ncells, solnVar, IBX,   ilo, ihi, jlo, jhi)
-    call read_scalar_into(u, "bmfy",  ncells, solnVar, IBY,   ilo, ihi, jlo, jhi)
-    call read_scalar_into(u, "bmfz",  ncells, solnVar, IBZ,   ilo, ihi, jlo, jhi)
-    call read_scalar_into(u, "bpsi",  ncells, solnVar, IBPSI, ilo, ihi, jlo, jhi)
+    call read_scalar_into(u, "bmfx",  ncells, solnVar, IBX,   ilo, ihi, jlo, jhi, klo, khi)
+    call read_scalar_into(u, "bmfy",  ncells, solnVar, IBY,   ilo, ihi, jlo, jhi, klo, khi)
+    call read_scalar_into(u, "bmfz",  ncells, solnVar, IBZ,   ilo, ihi, jlo, jhi, klo, khi)
+    call read_scalar_into(u, "bpsi",  ncells, solnVar, IBPSI, ilo, ihi, jlo, jhi, klo, khi)
 #endif
 
-    call read_scalar_into(u, "ener",  ncells, solnVar, IENER, ilo, ihi, jlo, jhi)
+    call read_scalar_into(u, "ener",  ncells, solnVar, IENER, ilo, ihi, jlo, jhi, klo, khi)
 
     close(u)
     nullify(solnVar)
@@ -95,33 +84,27 @@ contains
 
 
   ! -----------------------------
-  ! Read a scalar DataArray into solnVar(ivar,:,:)
+  ! Read a scalar DataArray into solnVar(ivar,:,:,:)
   ! -----------------------------
-  subroutine read_scalar_into(u, name, ncells, solnVar, ivar, ilo, ihi, jlo, jhi)
-    integer, intent(in) :: u, ncells, ivar, ilo, ihi, jlo, jhi
+  subroutine read_scalar_into(u, name, ncells, solnVar, ivar, ilo, ihi, jlo, jhi, klo, khi)
+    integer, intent(in) :: u, ncells, ivar, ilo, ihi, jlo, jhi, klo, khi
     character(len=*), intent(in) :: name
-    real, pointer :: solnVar(:,:,:)
+    real, pointer :: solnVar(:,:,:,:)
     real(8), allocatable :: buf(:)
-    integer :: i, j, idx
+    integer :: i, j, k, idx
 
     call seek_to_dataarray(u, name)
     call read_n_reals_from_dataarray(u, ncells, buf)
 
     idx = 0
-#if NDIM == 2
-    do j = jlo, jhi
-      do i = ilo, ihi
-        idx = idx + 1
-        solnVar(ivar,i,j) = real(buf(idx))
+    do k = klo, khi
+      do j = jlo, jhi
+        do i = ilo, ihi
+          idx = idx + 1
+          solnVar(ivar,i,j,k) = real(buf(idx))
+        end do
       end do
     end do
-#else
-    j = jlo
-    do i = ilo, ihi
-      idx = idx + 1
-      solnVar(ivar,i,j) = real(buf(idx))
-    end do
-#endif
     deallocate(buf)
   end subroutine read_scalar_into
 
@@ -173,7 +156,7 @@ contains
       end if
     end do
 
-    if (got < n) stop "read_n_reals_from_dataarray: not enough numbers"
+    if (got /= n) stop "read_n_reals_from_dataarray: wrong number of values"
   end subroutine read_n_reals_from_dataarray
 
   subroutine parse_reals_from_line(line, vals, nout)

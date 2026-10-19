@@ -8,18 +8,20 @@ contains
     real :: c, fact
 
     fact = sign(1.0, a) + sign(1.0, b)
-    c = 0.500 * fact * min(abs(a), abs(b)) 
+    c = 0.500 * fact * min(abs(a), abs(b))
 
   end function minmod
 
   subroutine get_facevalue_tvd(solnVar, recon_plus, recon_minus, check)
-        use sim_data, only: ilo, ihi, jlo, jhi, iGlo, iGhi, jGlo, jGhi 
+        use sim_data, only: ilo, ihi, jlo, jhi, klo, khi, &
+                            iGlo, iGhi, jGlo, jGhi, kGlo, kGhi
         implicit none
-        real, dimension(1:, iGlo:, jGlo:), intent(in) :: solnVar
-        real, dimension(NDIM, NCONSVAR_NUMBER, iGlo:iGhi,jGlo:jGhi), intent(inout) :: recon_minus, recon_plus
+        real, dimension(1:, iGlo:, jGlo:, kGlo:), intent(in) :: solnVar
+        real, dimension(NDIM, NCONSVAR_NUMBER, iGlo:iGhi,jGlo:jGhi,kGlo:kGhi), intent(inout) :: recon_minus, recon_plus
         logical, intent(in), optional :: check
         real :: fplus12, fminus12
-        integer :: i, j, n, im, ip, jm, jp, dir
+        integer :: i, j, k, n, im, ip, jm, jp, km, kp, dir
+        integer :: jpad, kpad
         real :: delp, delm, delc, dxover2, qm1, q, qp1, fact
         logical :: docheck
 
@@ -30,26 +32,34 @@ contains
            docheck = .true.
         end if
 
+        ! inactive axes have no reconstruction halo
+        jpad = min(1,NDIM-1)
+        kpad = max(0,NDIM-2)
+
         do dir = 1, NDIM
         select case (dir)
            case (IAXIS)
-              im = 1; ip = 1; jm = 0; jp = 0
+              im = 1; ip = 1; jm = 0; jp = 0; km = 0; kp = 0
            case (JAXIS)
-              im = 0; ip = 0; jm = 1; jp = 1
+              im = 0; ip = 0; jm = 1; jp = 1; km = 0; kp = 0
+           case (KAXIS)
+              im = 0; ip = 0; jm = 0; jp = 0; km = 1; kp = 1
         end select
 
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
-        !$OMP FIRSTPRIVATE(im, ip, jm, jp, dir, docheck) &
+        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(4) &
+        !$OMP MAP(TO: solnVar) MAP(TOFROM: recon_plus, recon_minus) &
+        !$OMP FIRSTPRIVATE(im, ip, jm, jp, km, kp, dir, docheck) &
+        !$OMP FIRSTPRIVATE(ilo, ihi, jlo, jhi, klo, khi, jpad, kpad) &
         !$OMP PRIVATE(qm1, q, qp1) &
         !$OMP PRIVATE(fplus12, fminus12) &
-        !$OMP PRIVATE(delp, delm, delc, fact, dxover2) 
-        do j = jlo-1, jhi+1
-           do i = ilo-1, ihi+1
-               do n = 1, NCONSVAR_NUMBER
-
-                  qm1 = solnVar(n,i-im, j-jm)
-                  q = solnVar(n,i,j)
-                  qp1 = solnVar(n,i+ip, j+jp)
+        !$OMP PRIVATE(delp, delm, delc, fact, dxover2)
+        do k = klo-kpad, khi+kpad
+          do j = jlo-jpad, jhi+jpad
+            do i = ilo-1, ihi+1
+              do n = 1, NCONSVAR_NUMBER
+                  qm1 = solnVar(n,i-im, j-jm, k-km)
+                  q = solnVar(n,i,j,k)
+                  qp1 = solnVar(n,i+ip, j+jp, k+kp)
 
                   delp = qp1 - q
                   delm = q - qm1
@@ -61,18 +71,14 @@ contains
 
                   if (delp * delm < 0.0) fact = 0.0
 
-                  dxover2 = 0.5 * fact 
-                  fplus12 = q + dxover2 
+                  dxover2 = 0.5 * fact
+                  fplus12 = q + dxover2
                   fminus12 = q - dxover2
-                  if (dir  == IAXIS) then
-                    recon_plus(dir,n,i,j) = fplus12
-                    recon_minus(dir,n,i,j) = fminus12
-                  else if (dir == JAXIS) then
-                    recon_plus(dir,n,i,j) = fplus12
-                    recon_minus(dir,n,i,j) = fminus12
-                  end if
-               end do
-           end do
+                  recon_plus(dir,n,i,j,k) = fplus12
+                  recon_minus(dir,n,i,j,k) = fminus12
+              end do
+            end do
+          end do
         end do
         !$OMP END TARGET TEAMS DISTRIBUTE PARALLEL DO
         end do !dir
@@ -80,19 +86,21 @@ contains
   end subroutine
 
   subroutine get_facevalue_weno(solnVar, recon_plus, recon_minus, check)
-        use sim_data, only: ilo, ihi, jlo, jhi, iGlo, iGhi, jGlo, jGhi 
+        use sim_data, only: ilo, ihi, jlo, jhi, klo, khi, &
+                            iGlo, iGhi, jGlo, jGhi, kGlo, kGhi
         implicit none
-        real, dimension(1:, iGlo:, jGlo:), intent(in) :: solnVar
-        real, dimension(NDIM, NCONSVAR_NUMBER, iGlo:iGhi,jGlo:jGhi), intent(inout) :: recon_minus, recon_plus
+        real, dimension(1:, iGlo:, jGlo:, kGlo:), intent(in) :: solnVar
+        real, dimension(NDIM, NCONSVAR_NUMBER, iGlo:iGhi,jGlo:jGhi,kGlo:kGhi), intent(inout) :: recon_minus, recon_plus
         logical, intent(in), optional :: check
         real :: fplus12, fminus12
 
         real, parameter :: eps = 1.0e-6
         real, dimension(2) :: beta, alpha, alphabar, &
-                                 omega, omegabar, & 
+                                 omega, omegabar, &
                                  qpluspoly, qminuspoly
         real :: qplus12, qminus12
-        integer :: i, j, n, im, ip, jm, jp, dir
+        integer :: i, j, k, n, im, ip, jm, jp, km, kp, dir
+        integer :: jpad, kpad
         real :: delp, delm
         real :: qm1, q, qp1
         logical :: docheck
@@ -100,7 +108,7 @@ contains
         real, parameter, dimension(2) :: c0 = (/1.00/2.00, 1.00/2.00/)
         real, parameter, dimension(2) :: c1 = (/-1.00/2.00, 3.00/2.00/)
         real, parameter, dimension(2) :: c_1 = (/3.00/2.00, -1.00/2.00/)
-        ! linear weights 
+        ! linear weights
         real, parameter, dimension(2) :: dcoeff = (/2.00/3.00, 1.00/3.00/)
         real, parameter, dimension(2) :: dbarcoeff = (/1.00/3.00, 2.00/3.00/)
 
@@ -109,28 +117,36 @@ contains
            docheck = .true.
         end if
 
+        ! inactive axes have no reconstruction halo
+        jpad = min(1,NDIM-1)
+        kpad = max(0,NDIM-2)
+
         do dir = 1, NDIM
         select case (dir)
            case (IAXIS)
-              im = 1; ip = 1; jm = 0; jp = 0
+              im = 1; ip = 1; jm = 0; jp = 0; km = 0; kp = 0
            case (JAXIS)
-              im = 0; ip = 0; jm = 1; jp = 1
+              im = 0; ip = 0; jm = 1; jp = 1; km = 0; kp = 0
+           case (KAXIS)
+              im = 0; ip = 0; jm = 0; jp = 0; km = 1; kp = 1
         end select
 
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
-        !$OMP FIRSTPRIVATE(im, ip, jm, jp, dir, docheck) &
+        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(4) &
+        !$OMP MAP(TO: solnVar) MAP(TOFROM: recon_plus, recon_minus) &
+        !$OMP FIRSTPRIVATE(im, ip, jm, jp, km, kp, dir, docheck) &
+        !$OMP FIRSTPRIVATE(ilo, ihi, jlo, jhi, klo, khi, jpad, kpad) &
         !$OMP PRIVATE(qm1, q, qp1, beta) &
         !$OMP PRIVATE(alpha, alphabar) &
         !$OMP PRIVATE(omega, omegabar, qpluspoly, qminuspoly) &
         !$OMP PRIVATE(qplus12, qminus12, fplus12, fminus12) &
-        !$OMP PRIVATE(delp, delm) 
-        do j = jlo-1, jhi+1
-           do i = ilo-1, ihi+1
-               do n = 1, NCONSVAR_NUMBER
-
-                  qm1 = solnVar(n,i-im, j-jm)
-                  q = solnVar(n,i,j)
-                  qp1 = solnVar(n,i+ip, j+jp)
+        !$OMP PRIVATE(delp, delm)
+        do k = klo-kpad, khi+kpad
+          do j = jlo-jpad, jhi+jpad
+            do i = ilo-1, ihi+1
+              do n = 1, NCONSVAR_NUMBER
+                  qm1 = solnVar(n,i-im, j-jm, k-km)
+                  q = solnVar(n,i,j,k)
+                  qp1 = solnVar(n,i+ip, j+jp, k+kp)
 
                   beta(1) = (qp1 - q)**2
                   beta(2) = (q - qm1)**2
@@ -167,16 +183,12 @@ contains
                      if (fminus12 < 0.000) then
                        fminus12 = q - 0.500 * minmod(delp, delm)
                      end if
-                  end if   
-                  if (dir  == IAXIS) then
-                    recon_plus(dir,n,i,j) = fplus12
-                    recon_minus(dir,n,i,j) = fminus12
-                  else if (dir == JAXIS) then
-                    recon_plus(dir,n,i,j) = fplus12
-                    recon_minus(dir,n,i,j) = fminus12
                   end if
-               end do
-           end do
+                  recon_plus(dir,n,i,j,k) = fplus12
+                  recon_minus(dir,n,i,j,k) = fminus12
+              end do
+            end do
+          end do
         end do
         !$OMP END TARGET TEAMS DISTRIBUTE PARALLEL DO
 
@@ -185,10 +197,11 @@ contains
   end subroutine get_facevalue_weno
 
   subroutine get_facevalue_weno5z(solnVar, recon_plus, recon_minus, check)
-        use sim_data, only: ilo, ihi, jlo, jhi, iGlo, iGhi, jGlo, jGhi 
+        use sim_data, only: ilo, ihi, jlo, jhi, klo, khi, &
+                            iGlo, iGhi, jGlo, jGhi, kGlo, kGhi
         implicit none
-        real, dimension(1:, iGlo:, jGlo:), intent(in) :: solnVar
-        real, dimension(NDIM, NCONSVAR_NUMBER, iGlo:iGhi,jGlo:jGhi), intent(inout) :: recon_minus, recon_plus
+        real, dimension(1:, iGlo:, jGlo:, kGlo:), intent(in) :: solnVar
+        real, dimension(NDIM, NCONSVAR_NUMBER, iGlo:iGhi,jGlo:jGhi,kGlo:kGhi), intent(inout) :: recon_minus, recon_plus
         logical, intent(in), optional :: check
 
         real :: fplus12, fminus12
@@ -197,8 +210,9 @@ contains
                               omega, omegabar, qpluspoly, &
                               qminuspoly
         real :: qplus12, qminus12
-        integer :: i, j, n, imm, im, ip, ipp, &
-                            jmm, jm, jp, jpp, dir 
+        integer :: i, j, k, n, imm, im, ip, ipp, &
+                            jmm, jm, jp, jpp, kmm, km, kp, kpp, dir
+        integer :: jpad, kpad
         real :: delp, delm, absbeta_diff
         real :: qm2, qm1, q, qp1, qp2
         logical :: docheck
@@ -222,38 +236,52 @@ contains
         real, parameter, dimension(3) :: coeff1m3 = (/ 11./6.,-7./6.,  2./6./)
         ! linear weights for i - 1/2
         real, parameter, dimension(3) :: dbarcoeff = (/0.3, 0.6, 0.1/)
-        
+
         docheck = .false.
         if (present(check)) then
            docheck = .true.
         end if
 
+        ! inactive axes have no reconstruction halo
+        jpad = min(1,NDIM-1)
+        kpad = max(0,NDIM-2)
+
         do dir = 1, NDIM
         select case (dir)
            case (IAXIS)
-              imm = 2; im = 1; ip = 1; ipp = 2 
+              imm = 2; im = 1; ip = 1; ipp = 2
               jmm = 0; jm = 0; jp = 0; jpp = 0
+              kmm = 0; km = 0; kp = 0; kpp = 0
            case (JAXIS)
-              imm = 0; im = 0; ip = 0; ipp = 0 
+              imm = 0; im = 0; ip = 0; ipp = 0
               jmm = 2; jm = 1; jp = 1; jpp = 2
+              kmm = 0; km = 0; kp = 0; kpp = 0
+           case (KAXIS)
+              imm = 0; im = 0; ip = 0; ipp = 0
+              jmm = 0; jm = 0; jp = 0; jpp = 0
+              kmm = 2; km = 1; kp = 1; kpp = 2
         end select
 
-        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
-        !$OMP FIRSTPRIVATE(imm, im, ip, ipp, jmm, jm, jp, jpp, docheck, dir) & 
+        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(4) &
+        !$OMP MAP(TO: solnVar) MAP(TOFROM: recon_plus, recon_minus) &
+        !$OMP FIRSTPRIVATE(imm, im, ip, ipp, jmm, jm, jp, jpp) &
+        !$OMP FIRSTPRIVATE(kmm, km, kp, kpp, docheck, dir) &
+        !$OMP FIRSTPRIVATE(ilo, ihi, jlo, jhi, klo, khi, jpad, kpad) &
         !$OMP PRIVATE(qm2, qm1, q, qp1, qp2, beta) &
         !$OMP PRIVATE(absbeta_diff, alpha, alphabar) &
         !$OMP PRIVATE(omega, omegabar, qpluspoly, qminuspoly) &
         !$OMP PRIVATE(qplus12, qminus12, fplus12, fminus12) &
         !$OMP PRIVATE(delp, delm)
-        do j = jlo-1, jhi+1
-           do i = ilo-1, ihi+1
-               do n = 1, NCONSVAR_NUMBER
-                  qm2 = solnVar(n,i-imm, j-jmm)
-                  qm1 = solnVar(n,i-im, j-jm)
-                  q = solnVar(n,i,j)
-                  qp1 = solnVar(n,i+ip, j+jp)
-                  qp2 = solnVar(n,i+ipp, j+jpp)
-                  
+        do k = klo-kpad, khi+kpad
+          do j = jlo-jpad, jhi+jpad
+            do i = ilo-1, ihi+1
+              do n = 1, NCONSVAR_NUMBER
+                  qm2 = solnVar(n,i-imm, j-jmm, k-kmm)
+                  qm1 = solnVar(n,i-im, j-jm, k-km)
+                  q = solnVar(n,i,j,k)
+                  qp1 = solnVar(n,i+ip, j+jp, k+kp)
+                  qp2 = solnVar(n,i+ipp, j+jpp, k+kpp)
+
                   beta(1) = n13o12*( qm2 - 2.*qm1 + q )**2 &
                      + 0.25*( qm2 - 4.*qm1 + 3.*q )**2
                   beta(2) = n13o12*( qm1 - 2.*q + qp1 )**2 &
@@ -264,13 +292,13 @@ contains
                   absbeta_diff = abs(beta(3) - beta(1))
 
                   alpha(1:3) = dcoeff(1:3) * ( 1 + absbeta_diff/(beta(1:3) + eps))
-                  alphabar(1:3) = dbarcoeff(1:3) * ( 1 + absbeta_diff/(beta(1:3) + eps)) 
+                  alphabar(1:3) = dbarcoeff(1:3) * ( 1 + absbeta_diff/(beta(1:3) + eps))
 
                   omega(1:3) = alpha(1:3) / sum(alpha)
                   omegabar(1:3) = alphabar(1:3) / sum(alphabar)
 
                   qpluspoly(1) = coeff1p1(1)*qm2 + coeff1p1(2)*qm1 + coeff1p1(3)*q
-                  !dot_product(coeff1p1(1:3), (/qm2, qm1, q/)) 
+                  !dot_product(coeff1p1(1:3), (/qm2, qm1, q/))
                   qpluspoly(2) = coeff1p2(1)*qm1 + coeff1p2(2)*q + coeff1p2(3)*qp1
                   !dot_product(coeff1p2(1:3), (/qm1, q, qp1/))
                   qpluspoly(3) = coeff1p3(1)*q + coeff1p3(2)*qp1 + coeff1p3(3)*qp2
@@ -285,10 +313,10 @@ contains
 
                   qplus12 = omega(1)*qpluspoly(1) + omega(2)*qpluspoly(2) + &
                             omega(3)*qpluspoly(3)
-                  !dot_product(omega(1:3), qpluspoly(1:3)) 
+                  !dot_product(omega(1:3), qpluspoly(1:3))
                   qminus12 = omegabar(1)*qminuspoly(1) + omegabar(2)*qminuspoly(2) + &
                              omegabar(3)*qminuspoly(3)
-                  !dot_product(omegabar(1:3), qminuspoly(1:3)) 
+                  !dot_product(omegabar(1:3), qminuspoly(1:3))
 
                   fplus12 = qplus12
                   fminus12 = qminus12
@@ -309,15 +337,11 @@ contains
                      end if
                   end if
 
-                  if (dir  == IAXIS) then
-                    recon_plus(dir,n,i,j) = fplus12
-                    recon_minus(dir,n,i,j) = fminus12
-                  else if (dir == JAXIS) then
-                    recon_plus(dir,n,i,j) = fplus12
-                    recon_minus(dir,n,i,j) = fminus12
-                  end if
-               end do
-           end do
+                  recon_plus(dir,n,i,j,k) = fplus12
+                  recon_minus(dir,n,i,j,k) = fminus12
+              end do
+            end do
+          end do
         end do
         !$OMP END TARGET TEAMS DISTRIBUTE PARALLEL DO
 
@@ -344,46 +368,46 @@ contains
   end function ppm_limited_slope
 
   subroutine get_facevalue_ppm(solnVar, recon_plus, recon_minus, check)
-    use sim_data, only: ilo, ihi, jlo, jhi, iGlo, iGhi, jGlo, jGhi
+    use sim_data, only: ilo, ihi, jlo, jhi, klo, khi, &
+                            iGlo, iGhi, jGlo, jGhi, kGlo, kGhi
     implicit none
-    real, dimension(1:, iGlo:, jGlo:), intent(in) :: solnVar
-    real, dimension(NDIM, NCONSVAR_NUMBER, iGlo:iGhi, jGlo:jGhi), &
+    real, dimension(1:, iGlo:, jGlo:, kGlo:), intent(in) :: solnVar
+    real, dimension(NDIM, NCONSVAR_NUMBER, iGlo:iGhi, jGlo:jGhi, kGlo:kGhi), &
           intent(inout) :: recon_plus, recon_minus
     logical, intent(in), optional :: check
-    integer :: i, j, n, dir, is, js
+    integer :: i, j, k, n, dir, is, js, ks
+    integer :: jpad, kpad
     real :: qm2, qm1, q, qp1, qp2, slope_m, slope_c, slope_p
     real :: fplus12, fminus12, dq, q6
 
-    if (NDIM /= 2) error stop 'PPM reconstruction supports the current 2-D grid only'
+    ! inactive axes have no reconstruction halo
+    jpad = min(1,NDIM-1)
+    kpad = max(0,NDIM-2)
 
     do dir = 1, NDIM
        select case (dir)
        case (IAXIS)
-          is = 1; js = 0
+          is = 1; js = 0; ks = 0
        case (JAXIS)
-          is = 0; js = 1
+          is = 0; js = 1; ks = 0
+       case (KAXIS)
+          is = 0; js = 0; ks = 1
        end select
 
-       !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(3) &
+       !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(4) &
        !$OMP MAP(TO: solnVar) MAP(TOFROM: recon_plus, recon_minus) &
-       !$OMP FIRSTPRIVATE(is, js, dir, ilo, ihi, jlo, jhi) &
+       !$OMP FIRSTPRIVATE(is, js, ks, dir, ilo, ihi, jlo, jhi, klo, khi, jpad, kpad) &
        !$OMP PRIVATE(qm2, qm1, q, qp1, qp2, slope_m, slope_c, slope_p) &
        !$OMP PRIVATE(fplus12, fminus12, dq, q6)
-       do j = jGlo, jGhi
-          do i = iGlo, iGhi
-             do n = 1, NCONSVAR_NUMBER
-                ! Initialize all output slots on the device. Only the
-                ! one-cell reconstruction halo is read by get_flux.
-                recon_plus(dir,n,i,j) = 0.0
-                recon_minus(dir,n,i,j) = 0.0
-                if (i < ilo-1 .or. i > ihi+1 .or. &
-                    j < jlo-1 .or. j > jhi+1) cycle
-
-                qm2 = solnVar(n,i-2*is,j-2*js)
-                qm1 = solnVar(n,i-is,j-js)
-                q   = solnVar(n,i,j)
-                qp1 = solnVar(n,i+is,j+js)
-                qp2 = solnVar(n,i+2*is,j+2*js)
+        do k = klo-kpad, khi+kpad
+          do j = jlo-jpad, jhi+jpad
+            do i = ilo-1, ihi+1
+              do n = 1, NCONSVAR_NUMBER
+                qm2 = solnVar(n,i-2*is,j-2*js,k-2*ks)
+                qm1 = solnVar(n,i-is,j-js,k-ks)
+                q   = solnVar(n,i,j,k)
+                qp1 = solnVar(n,i+is,j+js,k+ks)
+                qp2 = solnVar(n,i+2*is,j+2*js,k+2*ks)
 
                 slope_m = ppm_limited_slope(qm2, qm1, q)
                 slope_c = ppm_limited_slope(qm1, q, qp1)
@@ -405,28 +429,41 @@ contains
 
                 fminus12 = min(max(fminus12, min(qm1,q)), max(qm1,q))
                 fplus12  = min(max(fplus12, min(q,qp1)), max(q,qp1))
-                recon_minus(dir,n,i,j) = fminus12
-                recon_plus(dir,n,i,j) = fplus12
-             end do
+                recon_minus(dir,n,i,j,k) = fminus12
+                recon_plus(dir,n,i,j,k) = fplus12
+              end do
+            end do
           end do
-       end do
+        end do
        !$OMP END TARGET TEAMS DISTRIBUTE PARALLEL DO
     end do
   end subroutine get_facevalue_ppm
 
   subroutine recon_getcellfaces(solnVar, recon_plus, recon_minus)
 
-        use sim_data, only: xTpts, yTpts, dx, dy, gamma, ilo, ihi, jlo, jhi, & 
-                            recon_method, iGlo, iGhi, jGlo, jGhi
+        use sim_data, only: recon_method, iGlo, iGhi, jGlo, jGhi, kGlo, kGhi
         use misc_module, only: to_upper
         implicit none
-        real, dimension(1:, iGlo:, jGlo:), intent(in) :: solnVar
-        real, dimension(NDIM,NCONSVAR_NUMBER, iGlo:iGhi,jGlo:jGhi), intent(out) :: recon_plus, recon_minus
-        
-        integer :: i, j, n
+        real, dimension(1:, iGlo:, jGlo:, kGlo:), intent(in) :: solnVar
+        real, dimension(NDIM,NCONSVAR_NUMBER, iGlo:iGhi,jGlo:jGhi,kGlo:kGhi), intent(out) :: recon_plus, recon_minus
 
-        recon_plus(:,:,:,:) = 0.0
-        recon_minus(:,:,:,:) = 0.0
+        integer :: i, j, k, n
+
+        ! Initialize all output slots on the device. Only the
+        ! one-cell reconstruction halo is read by get_flux.
+        !$OMP TARGET TEAMS DISTRIBUTE PARALLEL DO COLLAPSE(4) &
+        !$OMP MAP(FROM: recon_plus, recon_minus)
+        do k = kGlo, kGhi
+          do j = jGlo, jGhi
+            do i = iGlo, iGhi
+              do n = 1, NCONSVAR_NUMBER
+                recon_plus(:,n,i,j,k) = 0.0
+                recon_minus(:,n,i,j,k) = 0.0
+              end do
+            end do
+          end do
+        end do
+        !$OMP END TARGET TEAMS DISTRIBUTE PARALLEL DO
 
         if (to_upper(trim(recon_method)) == "WENO3") then
                 call get_facevalue_weno(solnVar, recon_plus, recon_minus)
@@ -436,6 +473,8 @@ contains
                 call get_facevalue_weno5z(solnVar, recon_plus, recon_minus)
         elseif (to_upper(trim(recon_method)) == "PPM") then
            call get_facevalue_ppm(solnVar, recon_plus, recon_minus)
+        else
+           error stop "Unknown reconstruction method"
         end if
     end subroutine recon_getcellfaces
 
