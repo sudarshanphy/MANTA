@@ -57,7 +57,7 @@ contains
 #ifdef MHD
            solnVar(BMFX_VAR, i,j,k) = 1.0/sqrt(2.0)
            solnVar(BMFY_VAR, i,j,k) = 1.0/sqrt(2.0)
-           solnVar(BMFZ_VAR, i,j,k) = 0.0
+           solnVar(BMFZ_VAR, i,j,k) = 1.0/sqrt(2.0)
 #endif
            ! compute energy after all fields are initialized
            call eos_gete(solnVar(:,i,j,k))
