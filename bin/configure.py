@@ -20,7 +20,7 @@ def parse_arguments():
     # Define default values for all possible arguments
     defaults = {
         'simulation': 'sedov',
-        'hydro': 'rk2',
+        'hydro': 'rk2_gpu',
         'make': 'linux',
         'objdir': 'build',
         'run': 'hd',
@@ -44,8 +44,8 @@ def parse_arguments():
             else:
                 print(f"Ignored +{key} = {value} as {key} is not recognized!")
     # Use correct subdirectory while using GPU
-    if defaults['gpu'] == "true":
-        defaults['hydro'] = defaults['hydro'] + '_gpu'
+    #if defaults['gpu'] == "true":
+    #    defaults['hydro'] = defaults['hydro'] + '_gpu'
     return defaults
 
 def validate_paths(args):
