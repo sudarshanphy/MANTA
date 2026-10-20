@@ -26,6 +26,11 @@ contains
     ! reverse the normal velocity at reflecting walls
     sig = 1.0d0
     if (bc_int == REFLECT .and. var == VELX_VAR+Dir-1) sig = -1.0d0
+#ifdef MHD
+    ! PLUTO REFLECTIVE: normal B is odd, tangential B is even
+    ! https://plutocode.ph.unito.it/Doxygen/API-Reference_Guide/boundary_8c.html
+    if (bc_int == REFLECT .and. var == BMFX_VAR+Dir-1) sig = -1.0d0
+#endif
 
     do ii = 1, nghost(Dir)
       if (Face == LEFT) then
@@ -40,6 +45,21 @@ contains
         if (bc_int == REFLECT) src = hi(Dir) - ii + 1
       end if
 
+#ifdef MHD
+      ! PLUTO default: psi=0 in physical ghost cells (user guide, Sec. 6.2.2.2)
+      ! https://plutocode.ph.unito.it/userguide.pdf
+      if (var == BPSI_VAR) then
+        select case (Dir)
+        case (IAXIS)
+          q(dest,:,:) = 0.0
+        case (JAXIS)
+          q(:,dest,:) = 0.0
+        case (KAXIS)
+          q(:,:,dest) = 0.0
+        end select
+        cycle
+      end if
+#endif
       ! fill the boundary plane
       select case (Dir)
       case (IAXIS)
