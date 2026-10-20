@@ -162,6 +162,7 @@ contains
         real(8) :: bxL, byL, bzL, bpL
         real(8) :: bxR, byR, bzR, bpR
         real(8) :: B2L, B2R, vBL, vBR, qBL, qBR, cfL, cfR
+        real(8) :: bnstar, psistar
 #endif
         real(8) :: ubar, vbar, wbar, Hbar, cbar
         real(8) :: qL, qR, qbar, SL, SR
@@ -211,6 +212,32 @@ contains
             stop
         end select
 
+#ifdef MHD
+        ! solve the cleaning waves before the MHD Riemann problem
+        ! GLM interface construction: Mignone & Tzeferacos, JCP 229 (2010), 2117-2138.
+        ! "A Second-Order Unsplit Godunov Scheme for Cell-Centered MHD: the CTU-GLM scheme"
+        ! Sec. 3.2, Eqs. (23)-(25): https://arxiv.org/html/0911.3410#S3.SS2
+        ! Only this interface construction is used here, with our HLLE/HLLD solver.
+        ! Bn is the face-normal field; psi is the cleaning variable (bpL, bpR).
+        ! d_t Bn + d_n psi = 0,   d_t psi + ch**2 d_n Bn = 0.
+        ! Bn*  = (BnL+BnR)/2 - (psiR-psiL)/(2*ch)
+        ! psi* = (psiL+psiR)/2 - ch*(BnR-BnL)/2
+        ! Previously only the Bn and psi fluxes were corrected after the MHD solve.
+        ! Now both MHD states use Bn* and psi* before energies and wave speeds are built.
+        ! Density, velocity, pressure and transverse magnetic fields are unchanged.
+        bnstar = 0.5*(Uleft(ibn)+Uright(ibn)) - 0.5*(bpR-bpL)/ch
+        psistar = 0.5*(bpL+bpR) - 0.5*ch*(Uright(ibn)-Uleft(ibn))
+        select case (ibn)
+        case (6)
+          bxL = bnstar; bxR = bnstar
+        case (7)
+          byL = bnstar; byR = bnstar
+        case (8)
+          bzL = bnstar; bzR = bnstar
+        end select
+        bpL = psistar; bpR = psistar
+#endif
+
         sdR = sqrt(dR)
         sdL = sqrt(dL)
 
@@ -222,8 +249,10 @@ contains
         qR = Uright(imn)
 
 #ifdef MHD
-        eL =  eos_gete(Uleft(1:9))
-        eR =  eos_gete(Uright(1:9))
+        ! rebuild total energy with Bn* while keeping pressure fixed:
+        ! E_s* = E_s + ((Bn*)**2-Bn_s**2)/2, s=L,R (before floors).
+        eL =  eos_gete((/dL, ufL, vfL, wfL, pL, bxL, byL, bzL, bpL/))
+        eR =  eos_gete((/dR, ufR, vfR, wfR, pR, bxR, byR, bzR, bpR/))
 #else
         eL =  eos_gete(Uleft(1:5))
         eR =  eos_gete(Uright(1:5))
@@ -264,16 +293,16 @@ contains
 #endif
 #ifdef MHD
         ! magnetic field value in the normal direction
-        qBL = Uleft(ibn)
-        qBR = Uright(ibn)
+        qBL = bnstar
+        qBR = bnstar
         
         ! B.B quantity
-        B2L = sum(Uleft(6:8) * Uleft(6:8))
-        B2R = sum(Uright(6:8) * Uright(6:8))
+        B2L = bxL*bxL + byL*byL + bzL*bzL
+        B2R = bxR*bxR + byR*byR + bzR*bzR
 
         ! V.B quantity
-        vBL = sum(Uleft(2:4) * Uleft(6:8))
-        vBR = sum(Uright(2:4) * Uright(6:8))
+        vBL = ufL*bxL + vfL*byL + wfL*bzL
+        vBR = ufR*bxR + vfR*byR + wfR*bzR
         
         ! fast magnetosonic wave speed
         ! Miyoshi eqn 67 HLLD paper 
@@ -318,8 +347,10 @@ contains
             Flux = Fstar
         end if
 #ifdef MHD
-        Flux(ips) = 0.50 * ((ch * ch) * (qBL + qBR) - ch * (bpR - bpL))
-        Flux(ibn) = 0.50 * ((bpL + bpR) - ch * (qBR - qBL))
+        ! cleaning fluxes: F_Bn = psi*, F_psi = ch**2*Bn*.
+        ! These equal the previous cleaning fluxes; the other MHD fluxes now use Bn*.
+        Flux(ips) = ch*ch*bnstar
+        Flux(ibn) = psistar
 #endif
         return
     end subroutine hlle
@@ -339,6 +370,7 @@ contains
         real(8) :: ufL, ufR, vfL, vfR, wfL, wfR
         real(8) :: eL, eR, cfL, cfR, ptL, ptR, pt 
         real(8) :: qL, qR, SL, SR, SM, qBL, qBR, B2L, B2R, vBL, vBR
+        real(8) :: bnstar, psistar
         real(8) :: f1, f2, SL1, SR1, aVL, aVR, at1, at2, vt1L, vt2L
         real(8) :: vt1R, vt2R, dsL, dsR, sdsL, sdsR, enL, enR
         real(8), dimension(3) :: n
@@ -385,6 +417,32 @@ contains
             stop
         end select
 
+#ifdef MHD
+        ! solve the cleaning waves before the MHD Riemann problem
+        ! GLM interface construction: Mignone & Tzeferacos, JCP 229 (2010), 2117-2138.
+        ! "A Second-Order Unsplit Godunov Scheme for Cell-Centered MHD: the CTU-GLM scheme"
+        ! Sec. 3.2, Eqs. (23)-(25): https://arxiv.org/html/0911.3410#S3.SS2
+        ! Only this interface construction is used here, with our HLLE/HLLD solver.
+        ! Bn is the face-normal field; psi is the cleaning variable (bpL, bpR).
+        ! d_t Bn + d_n psi = 0,   d_t psi + ch**2 d_n Bn = 0.
+        ! Bn*  = (BnL+BnR)/2 - (psiR-psiL)/(2*ch)
+        ! psi* = (psiL+psiR)/2 - ch*(BnR-BnL)/2
+        ! Previously only the Bn and psi fluxes were corrected after the MHD solve.
+        ! Now both MHD states use Bn* and psi* before energies and wave speeds are built.
+        ! Density, velocity, pressure and transverse magnetic fields are unchanged.
+        bnstar = 0.5*(VL(ibn)+VR(ibn)) - 0.5*(bpR-bpL)/ch
+        psistar = 0.5*(bpL+bpR) - 0.5*ch*(VR(ibn)-VL(ibn))
+        select case (ibn)
+        case (6)
+          bxL = bnstar; bxR = bnstar
+        case (7)
+          byL = bnstar; byR = bnstar
+        case (8)
+          bzL = bnstar; bzR = bnstar
+        end select
+        bpL = psistar; bpR = psistar
+#endif
+
         udL = ufL * dL
         udR = ufR * dR
 
@@ -394,23 +452,25 @@ contains
         wdL = wfL * dL
         wdR = wfR * dR
 
-        eL =  eos_gete(VL(1:9))
-        eR =  eos_gete(VR(1:9))
+        ! rebuild total energy with Bn* while keeping pressure fixed:
+        ! E_s* = E_s + ((Bn*)**2-Bn_s**2)/2, s=L,R (before floors).
+        eL =  eos_gete((/dL, ufL, vfL, wfL, pL, bxL, byL, bzL, bpL/))
+        eR =  eos_gete((/dR, ufR, vfR, wfR, pR, bxR, byR, bzR, bpR/))
 
         qL = VL(imn) 
         qR = VR(imn)
 
         ! magnetic field value in the normal direction
-        qBL = VL(ibn)
-        qBR = VR(ibn)
+        qBL = bnstar
+        qBR = bnstar
         
         ! B.B quantity
-        B2L = sum(VL(6:8) * VL(6:8))
-        B2R = sum(VR(6:8) * VR(6:8))
+        B2L = bxL*bxL + byL*byL + bzL*bzL
+        B2R = bxR*bxR + byR*byR + bzR*bzR
 
         ! V.B quantity
-        vBL = sum(VL(2:4) * VL(6:8))
-        vBR = sum(VR(2:4) * VR(6:8))
+        vBL = ufL*bxL + vfL*byL + wfL*bzL
+        vBR = ufR*bxR + vfR*byR + wfR*bzR
 
         ! fast magnetosonic wave speed
         ! Miyoshi eqn 67 HLLD paper 
@@ -614,8 +674,10 @@ contains
          endif
         end if
 
-        Flux(ibn) = 0.5e0 * ((VL(ips) + VR(ips)) - ch * (VR(ibn) - VL(ibn)))
-        Flux(ips) = 0.5e0 * (ch*ch*(VL(ibn)+VR(ibn)) - ch*(VR(ips) - VL(ips)))
+        ! cleaning fluxes: F_Bn = psi*, F_psi = ch**2*Bn*.
+        ! These equal the previous cleaning fluxes; the other MHD fluxes now use Bn*.
+        Flux(ibn) = psistar
+        Flux(ips) = ch*ch*bnstar
 
         return
     end subroutine hlld

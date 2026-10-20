@@ -243,6 +243,7 @@ contains
         real(8) :: bxL, byL, bzL, bpL
         real(8) :: bxR, byR, bzR, bpR
         real(8) :: B2L, B2R, vBL, vBR, qBL, qBR, cfL, cfR
+        real(8) :: bnstar, psistar
 #endif
         real(8) :: ubar, vbar, wbar, Hbar, cbar
         real(8) :: qL, qR, qbar, SL, SR
@@ -293,7 +294,7 @@ contains
 #ifdef MHD
         !$OMP PRIVATE(bxL, byL, bzL, bpL) &
         !$OMP PRIVATE(bxR, byR, bzR, bpR) &
-        !$OMP PRIVATE(qBL, qBR, B2L, B2R, vBL, vBR, cfL, cfR) &
+        !$OMP PRIVATE(qBL, qBR, B2L, B2R, vBL, vBR, cfL, cfR, bnstar, psistar) &
 #endif
         !$OMP PRIVATE(UL, UR, SL, SR, FL, FR, Fstar, Flux)
         do k = klo, khi + ks
@@ -323,12 +324,39 @@ contains
               byL = recon_plus(dir,BMFY_VAR,i-is,j-js,k-ks)
               bzL = recon_plus(dir,BMFZ_VAR,i-is,j-js,k-ks)
               bpL = recon_plus(dir,BPSI_VAR,i-is,j-js,k-ks)
-              eL = max(eL + 0.5*(bxL*bxL + byL*byL + bzL*bzL), smalle)
 
               bxR = recon_minus(dir,BMFX_VAR,i,j,k)
               byR = recon_minus(dir,BMFY_VAR,i,j,k)
               bzR = recon_minus(dir,BMFZ_VAR,i,j,k)
               bpR = recon_minus(dir,BPSI_VAR,i,j,k)
+              ! solve the cleaning waves before the MHD Riemann problem
+              ! GLM interface construction: Mignone & Tzeferacos, JCP 229 (2010), 2117-2138.
+              ! "A Second-Order Unsplit Godunov Scheme for Cell-Centered MHD: the CTU-GLM scheme"
+              ! Sec. 3.2, Eqs. (23)-(25): https://arxiv.org/html/0911.3410#S3.SS2
+              ! Only this interface construction is used here, with our HLLE/HLLD solver.
+              ! Bn is the face-normal field; psi is the cleaning variable (bpL, bpR).
+              ! d_t Bn + d_n psi = 0,   d_t psi + ch**2 d_n Bn = 0.
+              ! Bn*  = (BnL+BnR)/2 - (psiR-psiL)/(2*ch)
+              ! psi* = (psiL+psiR)/2 - ch*(BnR-BnL)/2
+              ! Previously only the Bn and psi fluxes were corrected after the MHD solve.
+              ! Now both MHD states use Bn* and psi* before energies and wave speeds are built.
+              ! Density, velocity, pressure and transverse magnetic fields are unchanged.
+              qBL = recon_plus(dir,BMFX_VAR+dir-1,i-is,j-js,k-ks)
+              qBR = recon_minus(dir,BMFX_VAR+dir-1,i,j,k)
+              bnstar = 0.5*(qBL+qBR) - 0.5*(bpR-bpL)/ch
+              psistar = 0.5*(bpL+bpR) - 0.5*ch*(qBR-qBL)
+              select case (dir)
+              case (IAXIS)
+                bxL = bnstar; bxR = bnstar
+              case (JAXIS)
+                byL = bnstar; byR = bnstar
+              case (KAXIS)
+                bzL = bnstar; bzR = bnstar
+              end select
+              bpL = psistar; bpR = psistar
+              ! rebuild total energy with Bn* while keeping pressure fixed:
+              ! E_s* = E_s + ((Bn*)**2-Bn_s**2)/2, s=L,R (before floors).
+              eL = max(eL + 0.5*(bxL*bxL + byL*byL + bzL*bzL), smalle)
               eR = max(eR + 0.5*(bxR*bxR + byR*byR + bzR*bzR), smalle)
 #endif
 
@@ -377,8 +405,8 @@ contains
 #endif
 #ifdef MHD
               ! magnetic field value in the normal direction
-              qBL = recon_plus(dir,BMFX_VAR+dir-1,i-is,j-js,k-ks)
-              qBR = recon_minus(dir,BMFX_VAR+dir-1,i,j,k)
+              qBL = bnstar
+              qBR = bnstar
 
               ! B.B quantity
               B2L = bxL*bxL + byL*byL + bzL*bzL
@@ -431,8 +459,10 @@ contains
                   Flux = Fstar
               end if
 #ifdef MHD
-              Flux(BPSI_CONS) = 0.50 * ((ch * ch) * (qBL + qBR) - ch * (bpR - bpL))
-              Flux(BMFX_CONS+dir-1) = 0.50 * ((bpL + bpR) - ch * (qBR - qBL))
+              ! cleaning fluxes: F_Bn = psi*, F_psi = ch**2*Bn*.
+              ! These equal the previous cleaning fluxes; the other MHD fluxes now use Bn*.
+              Flux(BPSI_CONS) = ch*ch*bnstar
+              Flux(BMFX_CONS+dir-1) = psistar
 #endif
               if (dir == IAXIS) then
                 xF(1:NCONSVAR_NUMBER,i,j,k) = Flux(1:NCONSVAR_NUMBER)
@@ -467,10 +497,11 @@ contains
         real(8) :: ufL, ufR, vfL, vfR, wfL, wfR
         real(8) :: eL, eR, cfL, cfR, ptL, ptR, pt
         real(8) :: qL, qR, SL, SR, SM, qBL, qBR, B2L, B2R, vBL, vBR
+        real(8) :: bnstar, psistar
         real(8) :: f1, f2, SL1, SR1, aVL, aVR, at1, at2, vt1L, vt2L
         real(8) :: vt1R, vt2R, dsL, dsR, sdsL, sdsR, enL, enR
-        real(8) :: VLibt1, VLibt2, VRibt1, VRibt2, VLips, VRips
-        real(8) :: VLimt1, VRimt1, VLimt2, VRimt2, VLibn, VRibn
+        real(8) :: VLibt1, VLibt2, VRibt1, VRibt2
+        real(8) :: VLimt1, VRimt1, VLimt2, VRimt2
         real(8), parameter :: hllg_factor = 1.001d0
         integer, dimension(3) :: n
         integer :: i, j, k, dir
@@ -508,7 +539,6 @@ contains
         !$OMP MAP(TO: n, ch, gamma, smalld, smallp, smalle) &
         !$OMP FIRSTPRIVATE(dir, id, ips, ibn, imn, imt1, imt2) &
         !$OMP FIRSTPRIVATE(ie, ibt1, ibt2, is, js, ks) &
-        !$OMP PRIVATE(VLibn, VRibn, VLips, VRips) &
         !$OMP PRIVATE(VLimt1, VRimt1, VLimt2, VRimt2) &
         !$OMP PRIVATE(VLibt1, VRibt1, VLibt2, VRibt2) &
         !$OMP PRIVATE(dL, ufL, vfL, wfL, pL, eL) &
@@ -519,7 +549,7 @@ contains
         !$OMP PRIVATE(sdsL, sdsR, enL, enR, pt) &
         !$OMP PRIVATE(bxL, byL, bzL, bpL) &
         !$OMP PRIVATE(bxR, byR, bzR, bpR) &
-        !$OMP PRIVATE(qBL, qBR, B2L, B2R, vBL, vBR, cfL, cfR) &
+        !$OMP PRIVATE(qBL, qBR, B2L, B2R, vBL, vBR, cfL, cfR, bnstar, psistar) &
         !$OMP PRIVATE(UL, UR, SL, SR, FL, FR, Flux) &
         !$OMP PRIVATE(SM, UL1, UR1, U2, Uhll)
         do k = klo, khi + ks
@@ -536,7 +566,6 @@ contains
               byL = recon_plus(dir,BMFY_VAR,i-is,j-js,k-ks)
               bzL = recon_plus(dir,BMFZ_VAR,i-is,j-js,k-ks)
               bpL = recon_plus(dir,BPSI_VAR,i-is,j-js,k-ks)
-              eL = max(eL + 0.5*(bxL*bxL + byL*byL + bzL*bzL), smalle)
 
               dR  = max(recon_minus(dir,DENS_VAR,i,j,k), smalld)
               ufR = recon_minus(dir,VELX_VAR,i,j,k)
@@ -549,6 +578,34 @@ contains
               byR = recon_minus(dir,BMFY_VAR,i,j,k)
               bzR = recon_minus(dir,BMFZ_VAR,i,j,k)
               bpR = recon_minus(dir,BPSI_VAR,i,j,k)
+              ! solve the cleaning waves before the MHD Riemann problem
+              ! GLM interface construction: Mignone & Tzeferacos, JCP 229 (2010), 2117-2138.
+              ! "A Second-Order Unsplit Godunov Scheme for Cell-Centered MHD: the CTU-GLM scheme"
+              ! Sec. 3.2, Eqs. (23)-(25): https://arxiv.org/html/0911.3410#S3.SS2
+              ! Only this interface construction is used here, with our HLLE/HLLD solver.
+              ! Bn is the face-normal field; psi is the cleaning variable (bpL, bpR).
+              ! d_t Bn + d_n psi = 0,   d_t psi + ch**2 d_n Bn = 0.
+              ! Bn*  = (BnL+BnR)/2 - (psiR-psiL)/(2*ch)
+              ! psi* = (psiL+psiR)/2 - ch*(BnR-BnL)/2
+              ! Previously only the Bn and psi fluxes were corrected after the MHD solve.
+              ! Now both MHD states use Bn* and psi* before energies and wave speeds are built.
+              ! Density, velocity, pressure and transverse magnetic fields are unchanged.
+              qBL = recon_plus(dir,BMFX_VAR+dir-1,i-is,j-js,k-ks)
+              qBR = recon_minus(dir,BMFX_VAR+dir-1,i,j,k)
+              bnstar = 0.5*(qBL+qBR) - 0.5*(bpR-bpL)/ch
+              psistar = 0.5*(bpL+bpR) - 0.5*ch*(qBR-qBL)
+              select case (dir)
+              case (IAXIS)
+                bxL = bnstar; bxR = bnstar
+              case (JAXIS)
+                byL = bnstar; byR = bnstar
+              case (KAXIS)
+                bzL = bnstar; bzR = bnstar
+              end select
+              bpL = psistar; bpR = psistar
+              ! rebuild total energy with Bn* while keeping pressure fixed:
+              ! E_s* = E_s + ((Bn*)**2-Bn_s**2)/2, s=L,R (before floors).
+              eL = max(eL + 0.5*(bxL*bxL + byL*byL + bzL*bzL), smalle)
               eR = max(eR + 0.5*(bxR*bxR + byR*byR + bzR*bzR), smalle)
 
               ! some other quantities needed later:
@@ -560,18 +617,14 @@ contains
               VRibt1 = recon_minus(dir, ibt1,i,j,k)
               VLibt2 = recon_plus(dir, ibt2,i-is,j-js,k-ks)
               VRibt2 = recon_minus(dir, ibt2,i,j,k)
-              VLibn  = recon_plus(dir, ibn,i-is,j-js,k-ks)
-              VRibn  = recon_minus(dir, ibn,i,j,k)
-              VLips  = recon_plus(dir, ips,i-is,j-js,k-ks)
-              VRips  = recon_minus(dir, ips,i,j,k)
 
               ! speed in the normal direction
               qL = recon_plus(dir,VELX_VAR+dir-1,i-is,j-js,k-ks)
               qR = recon_minus(dir,VELX_VAR+dir-1,i,j,k)
 
               ! magnetic field value in the normal direction
-              qBL = recon_plus(dir,BMFX_VAR+dir-1,i-is,j-js,k-ks)
-              qBR = recon_minus(dir,BMFX_VAR+dir-1,i,j,k)
+              qBL = bnstar
+              qBR = bnstar
 
               ! B.B quantity
               B2L = bxL*bxL + byL*byL + bzL*bzL
@@ -781,8 +834,10 @@ contains
                   endif
               end if
 
-              Flux(ibn) = 0.5e0 * ((VLips + VRips) - ch * (VRibn - VLibn))
-              Flux(ips) = 0.5e0 * (ch*ch*(VLibn+VRibn) - ch*(VRips - VLips))
+              ! cleaning fluxes: F_Bn = psi*, F_psi = ch**2*Bn*.
+              ! These equal the previous cleaning fluxes; the other MHD fluxes now use Bn*.
+              Flux(ibn) = psistar
+              Flux(ips) = ch*ch*bnstar
 
               if (dir == IAXIS) then
                 xF(1:NCONSVAR_NUMBER,i,j,k) = Flux(1:NCONSVAR_NUMBER)
